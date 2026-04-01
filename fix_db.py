@@ -9,6 +9,11 @@ async def fix():
         await conn.execute(text("DROP TYPE IF EXISTS masterstatus CASCADE;"))
         await conn.execute(text("DROP TYPE IF EXISTS orderstatus CASCADE;"))
         await conn.execute(text("DROP TABLE IF EXISTS alembic_version CASCADE;"))
+        await conn.execute(text("DROP TABLE IF EXISTS users CASCADE;"))
+        await conn.execute(text("DROP TABLE IF EXISTS categories CASCADE;"))
+        await conn.execute(text("DROP TABLE IF EXISTS master_profiles CASCADE;"))
+        await conn.execute(text("DROP TABLE IF EXISTS master_category_subscriptions CASCADE;"))
+        await conn.execute(text("DROP TABLE IF EXISTS orders CASCADE;"))
         
     await engine.dispose()
     print("Успешно очищено. Теперь можно повторить upgrade head.")

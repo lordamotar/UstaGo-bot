@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from bot.states import RegistrationStates
 from sqlalchemy import select
@@ -36,28 +36,17 @@ def build_categories_keyboard(selected_ids: set) -> InlineKeyboardMarkup:
 
 @router.message(RegistrationStates.entering_name)
 async def process_name(message: Message, state: FSMContext):
-    """Saves name and asks for experience."""
+    """1. Saves name and asks for categories."""
     await state.update_data(full_name=message.text)
-    await state.set_state(RegistrationStates.entering_experience)
-    await message.answer(
-        f"Приятно познакомиться, {message.text}!\n\n"
-        "Сколько лет вы работаете в своей сфере? (Например: 5 лет или 'с 2015 года')"
-    )
-
-
-@router.message(RegistrationStates.entering_experience)
-async def process_experience(message: Message, state: FSMContext):
-    """Saves experience and moves to category selection."""
-    await state.update_data(experience=message.text)
     await state.set_state(RegistrationStates.selecting_categories)
     await state.update_data(selected_categories=[])
     
     keyboard = build_categories_keyboard(set())
     await message.answer(
-        "Отлично! Теперь выберите категории услуг, которые вы предоставляете (можно несколько):",
+        f"Приятно познакомиться, {message.text}!\n\n"
+        "2. Выберите категории услуг, которые вы предоставляете (можно несколько):",
         reply_markup=keyboard
     )
-
 
 @router.callback_query(RegistrationStates.selecting_categories, F.data.startswith("cat_toggle:"))
 async def toggle_category(callback: CallbackQuery, state: FSMContext):
@@ -83,7 +72,7 @@ async def toggle_category(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(RegistrationStates.selecting_categories, F.data == "cat_save")
 async def save_categories(callback: CallbackQuery, state: FSMContext):
-    """Processes the save action, moves to photo upload."""
+    """Processes categories, moves to 3. Description."""
     data = await state.get_data()
     selected_categories = data.get("selected_categories", [])
     
@@ -91,18 +80,10 @@ async def save_categories(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⚠️ Выберите хотя бы одну категорию!", show_alert=True)
         return
         
-    await state.set_state(RegistrationStates.uploading_photos)
-    await state.update_data(photos=[])
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустить / Готово", callback_data="photo_done")]
-    ])
-    
+    await state.set_state(RegistrationStates.entering_description)
     await callback.message.edit_text(
         "✅ Категории успешно сохранены!\n\n"
-        "Теперь отправьте 1–3 фотографии ваших работ.\n"
-        "Когда закончите, нажмите кнопку ниже.",
-        reply_markup=keyboard
+        "3. Напишите краткое описание вашего опыта (1–2 предложения)."
     )
     await callback.answer()
 
@@ -119,29 +100,82 @@ async def process_photo(message: Message, state: FSMContext):
     
     count = len(photos)
     if count >= 3:
-        await state.set_state(RegistrationStates.entering_description)
-        await message.answer("Максимум 3 фото получено. Теперь напишите краткое описание вашего опыта.")
+        await state.set_state(RegistrationStates.sharing_phone)
+        
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        await message.answer(
+            "Максимум 3 фото получено. 6. Теперь поделитесь вашим номером телефона. "
+            "Он будет передаваться клиенту, когда вы договоритесь о заказе.",
+            reply_markup=keyboard
+        )
     else:
-        await message.answer(f"Получено фото №{count}. Можете отправить еще или нажать 'Готово'.")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💾 Готово, к следующему шагу", callback_data="photo_done")]
+        ])
+        await message.answer(
+            f"✅ Фото №{count} получено.\n"
+            "Вы можете отправить еще (макс. 3) или нажать кнопку ниже, если закончили.",
+            reply_markup=keyboard
+        )
 
 
 @router.callback_query(RegistrationStates.uploading_photos, F.data == "photo_done")
 async def finish_photos(callback: CallbackQuery, state: FSMContext):
-    """Finishes photo step even if 0 or 1-2 photos sent."""
-    await state.set_state(RegistrationStates.entering_description)
-    await callback.message.edit_text("Отлично! Теперь напишите краткое описание вашего опыта (1-2 предложения).")
+    """6. Finishes photos, moves to phone sharing."""
+    await state.set_state(RegistrationStates.sharing_phone)
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
+    await callback.message.answer(
+        "Почти готово! 6. Поделитесь вашим номером телефона. "
+        "Он будет передаваться клиенту, когда вы договоритесь о заказе.",
+        reply_markup=keyboard
+    )
     await callback.answer()
-
-
 @router.message(RegistrationStates.entering_description)
 async def process_description(message: Message, state: FSMContext):
-    """Final registration step: saves everything to database."""
-    description = message.text
+    """4. Saves description and asks for experience."""
+    await state.update_data(description=message.text)
+    await state.set_state(RegistrationStates.entering_experience)
+    await message.answer(
+        "Отлично! 4. Сколько лет вы работаете в своей сфере? (Например: 5 лет или 'с 2015 года')"
+    )
+
+
+@router.message(RegistrationStates.entering_experience)
+async def process_experience(message: Message, state: FSMContext):
+    """5. Saves experience and moves to photo upload."""
+    await state.update_data(experience=message.text)
+    await state.set_state(RegistrationStates.uploading_photos)
+    await state.update_data(photos=[])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить / Готово", callback_data="photo_done")]
+    ])
+    
+    await message.answer(
+        "Принято. 5. Теперь отправьте 1–3 фотографии ваших работ.\n"
+        "Когда закончите, нажмите кнопку ниже под сообщением.",
+        reply_markup=keyboard
+    )
+
+
+@router.message(RegistrationStates.sharing_phone, F.contact)
+async def process_phone(message: Message, state: FSMContext):
+    """Final registration step: saves everything to database including phone."""
+    phone = message.contact.phone_number
     data = await state.get_data()
     
     # DB Save Logic
     async with async_session_maker() as session:
-        # Check if user already exists
         user_stmt = select(User).where(User.telegram_id == message.from_user.id)
         existing_user = await session.execute(user_stmt)
         user = existing_user.scalar_one_or_none()
@@ -151,6 +185,7 @@ async def process_description(message: Message, state: FSMContext):
                 telegram_id=message.from_user.id,
                 full_name=data['full_name'],
                 username=message.from_user.username,
+                phone_number=phone,
                 role=UserRole.MASTER
             )
             session.add(user)
@@ -158,18 +193,16 @@ async def process_description(message: Message, state: FSMContext):
         else:
             user.role = UserRole.MASTER
             user.full_name = data['full_name']
+            user.phone_number = phone
         
-        # Create or update Master Profile
-        # Note: In a real app we'd need to create categories in DB first.
-        # For MVP, we'll just handle the master_profile record.
         profile = MasterProfile(
             user_id=user.id,
-            description=description,
+            description=data['description'],
             experience=data['experience'],
             status=MasterStatus.PENDING
         )
         session.add(profile)
-        await session.flush()  # To get the profile.id
+        await session.flush()
         master_profile_id = profile.id
         await session.commit()
 
@@ -177,8 +210,9 @@ async def process_description(message: Message, state: FSMContext):
     admin_text = (
         "🆕 Новая заявка от Мастера!\n\n"
         f"Фио: {data['full_name']}\n"
+        f"Телефон: {phone}\n"
         f"Стаж: {data['experience']}\n"
-        f"Описание: {description}\n"
+        f"Описание: {data['description']}\n"
         f"TG: @{message.from_user.username or 'no_username'} ({message.from_user.id})"
     )
     

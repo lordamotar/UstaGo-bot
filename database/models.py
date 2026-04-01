@@ -33,6 +33,7 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[Optional[str]] = mapped_column(String(255))
+    phone_number: Mapped[Optional[str]] = mapped_column(String(20))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.CLIENT)
     points: Mapped[int] = mapped_column(Integer, default=100)  # Initial bonus
     

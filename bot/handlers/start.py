@@ -4,6 +4,10 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from bot.states import RegistrationStates
 
+from sqlalchemy import select
+from database.engine import async_session_maker
+from database.models import User, UserRole
+
 router = Router()
 
 def get_role_keyboard() -> ReplyKeyboardMarkup:
@@ -46,8 +50,20 @@ async def handle_client_role(message: Message):
 @router.message(F.text == "🔨 Я мастер")
 async def handle_master_role(message: Message, state: FSMContext):
     """
-    Shows registration info and starts the state-machine.
+    Checks if user is already a MASTER, otherwise starts registration flow.
     """
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+    if user and user.role == UserRole.MASTER:
+        await message.answer(
+            "📍 Вы уже зарегистрированы как мастер в нашей системе!\n\n"
+            "Вы можете ожидать заказы или управлять своим профилем в настройках (скоро появится)."
+        )
+        return
+
     text = (
         "🧰 Отлично! Вы на шаг ближе к бесплатным заказам.\n\n"
         "Что вы получите:\n"
@@ -55,11 +71,13 @@ async def handle_master_role(message: Message, state: FSMContext):
         "✅ Возможность приглашать коллег и получать баллы\n"
         "✅ Знак «Аккредитованный специалист» после проверки\n\n"
         "Для старта заполните короткую анкету:\n"
-        "1. Ваше имя (как будет отображаться клиентам)\n"
+        "1. Ваше имя\n"
         "2. Категории услуг\n"
-        "3. Фото работ\n"
-        "4. Краткое описание\n\n"
-        "🚀 Начнём? Напишите, как вас зовут."
+        "3. Краткое описание\n"
+        "4. Ваш стаж\n"
+        "5. Фото ваших работ\n"
+        "6. Контактный номер\n\n"
+        "🚀 Начнём! Напишите, как вас зовут."
     )
     
     await state.set_state(RegistrationStates.entering_name)
