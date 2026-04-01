@@ -10,18 +10,7 @@ from database.models import User, UserRole
 
 router = Router()
 
-def get_role_keyboard() -> ReplyKeyboardMarkup:
-    """Returns the keyboard for role selection."""
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="👤 Я клиент"),
-                KeyboardButton(text="🔨 Я мастер")
-            ]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
+from bot.keyboards.registration import get_role_keyboard
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -47,6 +36,8 @@ async def handle_client_role(message: Message):
         "Выбран профиль: Клиент. \nВ следующих обновлениях здесь появится кнопка создания заявки."
     )
 
+from bot.keyboards.master import get_master_main_menu
+
 @router.message(F.text == "🔨 Я мастер")
 async def handle_master_role(message: Message, state: FSMContext):
     """
@@ -60,7 +51,8 @@ async def handle_master_role(message: Message, state: FSMContext):
     if user and user.role == UserRole.MASTER:
         await message.answer(
             "📍 Вы уже зарегистрированы как мастер в нашей системе!\n\n"
-            "Вы можете ожидать заказы или управлять своим профилем в настройках (скоро появится)."
+            "Вы можете управлять своим профилем и заказами в меню ниже:",
+            reply_markup=get_master_main_menu()
         )
         return
 

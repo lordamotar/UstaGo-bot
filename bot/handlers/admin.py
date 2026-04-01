@@ -1,3 +1,4 @@
+from bot.keyboards.master import get_master_main_menu
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -45,7 +46,6 @@ async def approve_master(callback: CallbackQuery):
         stmt = select(User.telegram_id).join(MasterProfile).where(MasterProfile.id == master_id)
         res = await session.execute(stmt)
         tg_id = res.scalar()
-        
         await session.commit()
         
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")
@@ -54,7 +54,8 @@ async def approve_master(callback: CallbackQuery):
         await callback.bot.send_message(
             tg_id, 
             "🎉 Поздравляем! Ваш профиль мастера одобрен.\n"
-            "Теперь вы будете получать уведомления о новых заказах в ваших категориях."
+            "Теперь вы будете получать уведомления о новых заказах в ваших категориях.",
+            reply_markup=get_master_main_menu()
         )
     except Exception:
         pass

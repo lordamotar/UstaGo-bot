@@ -1,6 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
+from bot.keyboards.master import get_master_main_menu
 from bot.states import RegistrationStates
 from sqlalchemy import select
 from bot.core.config import config
@@ -19,19 +20,11 @@ MOCK_CATEGORIES = [
 
 router = Router()
 
-def build_categories_keyboard(selected_ids: set) -> InlineKeyboardMarkup:
-    """Builds the multi-select inline keyboard based on selected category IDs."""
-    buttons = []
-    for cat in MOCK_CATEGORIES:
-        is_selected = cat["id"] in selected_ids
-        prefix = "✅ " if is_selected else "❌ "
-        btn = InlineKeyboardButton(
-            text=f"{prefix}{cat['name']}",
-            callback_data=f"cat_toggle:{cat['id']}"
-        )
-        buttons.append([btn])
-    buttons.append([InlineKeyboardButton(text="💾 Сохранить", callback_data="cat_save")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+from bot.keyboards.registration import (
+    build_categories_keyboard, 
+    get_photo_done_keyboard, 
+    get_phone_sharing_keyboard
+)
 
 
 @router.message(RegistrationStates.entering_name)
@@ -41,7 +34,7 @@ async def process_name(message: Message, state: FSMContext):
     await state.set_state(RegistrationStates.selecting_categories)
     await state.update_data(selected_categories=[])
     
-    keyboard = build_categories_keyboard(set())
+    keyboard = build_categories_keyboard(set(), MOCK_CATEGORIES)
     await message.answer(
         f"Приятно познакомиться, {message.text}!\n\n"
         "2. Выберите категории услуг, которые вы предоставляете (можно несколько):",
@@ -61,7 +54,7 @@ async def toggle_category(callback: CallbackQuery, state: FSMContext):
         selected_categories.add(cat_id)
         
     await state.update_data(selected_categories=list(selected_categories))
-    keyboard = build_categories_keyboard(selected_categories)
+    keyboard = build_categories_keyboard(selected_categories, MOCK_CATEGORIES)
     
     try:
         await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -102,20 +95,14 @@ async def process_photo(message: Message, state: FSMContext):
     if count >= 3:
         await state.set_state(RegistrationStates.sharing_phone)
         
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
-            resize_keyboard=True,
-            one_time_keyboard=True
-        )
+        keyboard = get_phone_sharing_keyboard()
         await message.answer(
             "Максимум 3 фото получено. 6. Теперь поделитесь вашим номером телефона. "
             "Он будет передаваться клиенту, когда вы договоритесь о заказе.",
             reply_markup=keyboard
         )
     else:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💾 Готово, к следующему шагу", callback_data="photo_done")]
-        ])
+        keyboard = get_photo_done_keyboard()
         await message.answer(
             f"✅ Фото №{count} получено.\n"
             "Вы можете отправить еще (макс. 3) или нажать кнопку ниже, если закончили.",
@@ -128,11 +115,7 @@ async def finish_photos(callback: CallbackQuery, state: FSMContext):
     """6. Finishes photos, moves to phone sharing."""
     await state.set_state(RegistrationStates.sharing_phone)
     
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
+    keyboard = get_phone_sharing_keyboard()
     
     await callback.message.answer(
         "Почти готово! 6. Поделитесь вашим номером телефона. "
@@ -228,12 +211,11 @@ async def process_phone(message: Message, state: FSMContext):
             await message.bot.send_message(admin_id, admin_text, reply_markup=keyboard)
         except Exception:
             pass
-
     await state.set_state(RegistrationStates.pending_approval)
     
     success_text = (
         "⏳ Анкета отправлена на проверку!\n\n"
         "Мы внимательно проверяем каждого мастера, чтобы сохранить доверие клиентов.\n"
-        "Мы пришлем вам уведомление, как только ваш профиль будет одобрен."
+        "Вы уже можете посмотреть возможности вашего личного кабинета под этим сообщением."
     )
-    await message.answer(success_text)
+    await message.answer(success_text, reply_markup=get_master_main_menu())
