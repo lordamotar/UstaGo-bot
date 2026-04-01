@@ -4,4 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "aiogram>=3.26.0",
+    "alembic>=1.18.4",
+    "asyncpg>=0.31.0",
+    "dotenv>=0.9.9",
+    "python-dotenv>=1.2.2",
+    "redis>=7.4.0",
+    "sqlalchemy>=2.0.48",
+]
