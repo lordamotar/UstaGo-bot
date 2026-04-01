@@ -2,6 +2,7 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
+from bot.states import RegistrationStates
 
 router = Router()
 
@@ -43,7 +44,10 @@ async def handle_client_role(message: Message):
     )
 
 @router.message(F.text == "🔨 Я мастер")
-async def handle_master_role(message: Message):
+async def handle_master_role(message: Message, state: FSMContext):
+    """
+    Shows registration info and starts the state-machine.
+    """
     text = (
         "🧰 Отлично! Вы на шаг ближе к бесплатным заказам.\n\n"
         "Что вы получите:\n"
@@ -51,21 +55,12 @@ async def handle_master_role(message: Message):
         "✅ Возможность приглашать коллег и получать баллы\n"
         "✅ Знак «Аккредитованный специалист» после проверки\n\n"
         "Для старта заполните короткую анкету:\n"
-        "1. Ваше имя\n"
+        "1. Ваше имя (как будет отображаться клиентам)\n"
         "2. Категории услуг\n"
         "3. Фото работ\n"
         "4. Краткое описание\n\n"
-        "🚀 Начнём?"
+        "🚀 Начнём? Напишите, как вас зовут."
     )
     
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Регистрация Мастера")]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    await message.answer(text, reply_markup=keyboard)
-
-@router.message()
-async def catch_all(message: Message):
-    """Fallback handler to see all incoming messages."""
-    await message.answer(f"Я получил твое сообщение: {message.text}. Но пока не знаю, что с ним делать.")
+    await state.set_state(RegistrationStates.entering_name)
+    await message.answer(text)

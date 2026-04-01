@@ -5,6 +5,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.core.config import config
 from bot.handlers.registration import router as registration_router
 from bot.handlers.start import router as start_router
+from bot.handlers.admin import router as admin_router
 
 from bot.middlewares.logging import LoggingMiddleware
 
@@ -31,6 +32,7 @@ async def main():
     dp.update.outer_middleware(LoggingMiddleware())
 
     # Include routers
+    dp.include_router(admin_router)
     dp.include_router(start_router)
     dp.include_router(registration_router)
 

@@ -67,6 +67,7 @@ class MasterProfile(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.id'), unique=True, nullable=False)
     status: Mapped[MasterStatus] = mapped_column(Enum(MasterStatus), default=MasterStatus.PENDING)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    experience: Mapped[Optional[str]] = mapped_column(String(100))
     rating: Mapped[float] = mapped_column(default=0.0)
 
     # Relationships

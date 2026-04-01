@@ -19,5 +19,8 @@ class Config:
     ).render_as_string(hide_password=False)
     
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    
+    # Administraton: list of telegram IDs allowed to use admin commands
+    ADMIN_IDS = set(int(uid) for uid in os.getenv("ADMIN_IDS", "").split(",") if uid.strip())
 
 config = Config()
