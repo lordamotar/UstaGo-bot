@@ -11,6 +11,7 @@ from bot.keyboards.master import (
     get_edit_profile_inline_keyboard, get_photo_management_keyboard
 )
 from bot.states import EditProfileStates, ManagePhotoStates, SettingsStates, BidStates, ReviewStates
+from bot.core.config import config
 
 router = Router()
 
@@ -314,7 +315,7 @@ async def process_bid_message(message: Message, state: FSMContext):
     data = await state.get_data()
     order_id, price_str = data['bid_order_id'], data['bid_price']
     async with async_session_maker() as session:
-        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id))).scalar_one()
+        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id))).scalar()
         user.points -= 50
         session.add(Transaction(user_id=user.id, amount=-50, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}"))
         import re
@@ -322,7 +323,7 @@ async def process_bid_message(message: Message, state: FSMContext):
         bid = Bid(order_id=order_id, master_id=user.master_profile.id, suggested_price=price_val, message=message.text)
         session.add(bid)
         await session.flush()
-        order = (await session.execute(select(Order).options(selectinload(Order.client)).where(Order.id == order_id))).scalar_one()
+        order = (await session.execute(select(Order).options(selectinload(Order.client)).where(Order.id == order_id))).scalar()
         client_tg_id = order.client.telegram_id
         await session.commit()
     await message.answer("✅ Отклик отправлен!")
@@ -372,11 +373,13 @@ async def show_settings_handler(message: Message):
 @router.message(F.text == "🏠 Выход в главное меню")
 async def exit_to_main(message: Message):
     from bot.handlers.start import get_role_keyboard
-    await message.answer("🏠 Вы вернулись в главное меню.", reply_markup=get_role_keyboard())
+    is_admin = message.chat.id in config.ADMIN_IDS
+    await message.answer("🏠 Вы вернулись в главное меню.", reply_markup=get_role_keyboard(is_admin=is_admin))
 
 @router.message(F.text == "🔙 Назад в меню")
-async def back_to_main(message: Message):
-    await message.answer("📋 Главное меню", reply_markup=get_master_main_menu())
+async def back_to_master_main(message: Message):
+    is_admin = message.chat.id in config.ADMIN_IDS
+    await message.answer("Главное меню мастера:", reply_markup=get_master_main_menu(is_admin=is_admin))
 
 @router.message(F.text == "🆘 Помощь")
 async def show_help(message: Message):

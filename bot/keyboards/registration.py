@@ -1,14 +1,18 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-def get_role_keyboard() -> ReplyKeyboardMarkup:
+def get_role_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Returns the keyboard for role selection."""
+    keyboard = [
+        [
+            KeyboardButton(text="👤 Я клиент"),
+            KeyboardButton(text="🔨 Я мастер")
+        ]
+    ]
+    if is_admin:
+        keyboard.append([KeyboardButton(text="👨‍✈️ Админ-панель")])
+        
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text="👤 Я клиент"),
-                KeyboardButton(text="🔨 Я мастер")
-            ]
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
         one_time_keyboard=True
     )

@@ -59,7 +59,9 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandStart =
         "👉 Кто вы?"
     )
     
-    await message.answer(text, reply_markup=get_role_keyboard())
+    from bot.core.config import config
+    is_admin = message.from_user.id in config.ADMIN_IDS
+    await message.answer(text, reply_markup=get_role_keyboard(is_admin=is_admin))
 
 @router.message(F.text == "👤 Я клиент")
 async def handle_client_role(message: Message, state: FSMContext):
@@ -88,11 +90,14 @@ async def handle_client_role(message: Message, state: FSMContext):
                 )
                 return
     
+            from bot.core.config import config
+            is_admin = message.from_user.id in config.ADMIN_IDS
+    
     await message.answer(
         "🌆 <b>Добро пожаловать в кабинет клиента!</b>\n\n"
         "Здесь вы можете создать заявку и получить отклики от лучших мастеров города Семей.",
         parse_mode="HTML",
-        reply_markup=get_client_main_menu()
+        reply_markup=get_client_main_menu(is_admin=is_admin)
     )
 
 @router.message(F.contact)

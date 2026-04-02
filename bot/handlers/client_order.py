@@ -157,4 +157,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         
     await callback.message.edit_text(f"🚀 *Заявка №{order_id} опубликована!*\n\nМастера получили уведомления и скоро начнут откликаться.", parse_mode="Markdown")
     await state.clear()
+    from bot.core.config import config
+    is_admin = callback.from_user.id in config.ADMIN_IDS
+    from bot.keyboards.client import get_client_main_menu
+    await callback.message.answer("Вы в главном меню.", reply_markup=get_client_main_menu(is_admin=is_admin))
     await callback.answer()

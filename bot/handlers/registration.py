@@ -219,4 +219,5 @@ async def process_phone(message: Message, state: FSMContext):
         "Мы внимательно проверяем каждого мастера, чтобы сохранить доверие клиентов.\n"
         "Вы уже можете посмотреть возможности вашего личного кабинета под этим сообщением."
     )
-    await message.answer(success_text, reply_markup=get_master_main_menu())
+    is_admin = message.from_user.id in config.ADMIN_IDS
+    await message.answer(success_text, reply_markup=get_master_main_menu(is_admin=is_admin))

@@ -9,6 +9,25 @@ from sqlalchemy.orm import selectinload, joinedload
 
 router = Router()
 
+@router.message(F.text == "👤 Мой профиль")
+async def show_client_profile(message: Message):
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        
+    if not user: return
+    
+    text = (
+        f"👤 <b>Ваш профиль клиента</b>\n\n"
+        f"Имя: {user.full_name}\n"
+        f"Телефон: {user.phone_number or '—'}\n"
+        f"Баланс: {user.points} баллов\n"
+    )
+    from bot.core.config import config
+    is_admin = message.from_user.id in config.ADMIN_IDS
+    from bot.keyboards.client import get_client_main_menu
+    await message.answer(text, parse_mode="HTML", reply_markup=get_client_main_menu(is_admin=is_admin))
+
 @router.message(F.text == "⏳ Мои заявки")
 async def show_my_orders(message: Message):
     async with async_session_maker() as session:
@@ -273,5 +292,7 @@ async def handle_review_comment(message: Message, state: FSMContext):
     await message.answer("🙏 Спасибо за ваш отзыв! Это помогает мастерам становиться лучше.")
     await state.clear()
     
+    from bot.core.config import config
+    is_admin = message.from_user.id in config.ADMIN_IDS
     from bot.keyboards.client import get_client_main_menu
-    await message.answer("Вы в главном меню.", reply_markup=get_client_main_menu())
+    await message.answer("Вы в главном меню.", reply_markup=get_client_main_menu(is_admin=is_admin))

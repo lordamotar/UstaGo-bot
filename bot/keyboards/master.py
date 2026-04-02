@@ -34,7 +34,7 @@ def get_photo_management_keyboard(count: int) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_master_main_menu() -> ReplyKeyboardMarkup:
+def get_master_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Returns the main menu for registered Masters."""
     keyboard = [
         [KeyboardButton(text="📋 Мои заказы"), KeyboardButton(text="⭐ Рейтинг и отзывы")],
@@ -42,6 +42,9 @@ def get_master_main_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="🔗 Рефералы"), KeyboardButton(text="⚙️ Настройки")],
         [KeyboardButton(text="🆘 Помощь"), KeyboardButton(text="🏠 Выход в главное меню")]
     ]
+    if is_admin:
+        keyboard.append([KeyboardButton(text="👨‍✈️ Админ-панель")])
+        
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 def get_profile_menu() -> ReplyKeyboardMarkup:
