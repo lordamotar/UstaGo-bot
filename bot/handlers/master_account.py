@@ -335,11 +335,51 @@ async def process_bid_message(message: Message, state: FSMContext):
 @router.message(F.text == "📊 Статистика")
 async def show_stats_handler(message: Message):
     async with async_session_maker() as session:
-        res = await session.execute(select(MasterProfile.id).join(User).where(User.telegram_id == message.chat.id))
-        master_id = res.scalar()
-        completed = (await session.execute(select(func.count(Order.id)).join(Bid).where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.COMPLETED))).scalar() or 0
-        active = (await session.execute(select(func.count(Order.id)).join(Bid).where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.ACTIVE))).scalar() or 0
-    await message.answer(f"📊 <b>Статистика:</b>\n✅ Выполнено: {completed}\n⚡️ В работе: {active}", parse_mode="HTML")
+        # Get user and master profile
+        stmt = select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if not user or not user.master_profile: return
+        
+        master_id = user.master_profile.id
+        
+        # 1. Count completed orders
+        completed = (await session.execute(
+            select(func.count(Order.id))
+            .join(Bid)
+            .where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.COMPLETED)
+        )).scalar() or 0
+        
+        # 2. Count active orders
+        active = (await session.execute(
+            select(func.count(Order.id))
+            .join(Bid)
+            .where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.ACTIVE)
+        )).scalar() or 0
+        
+        # 3. Calculate total lifetime points (non-negative transactions)
+        total_earned = (await session.execute(
+            select(func.sum(Transaction.amount))
+            .where(Transaction.user_id == user.id, Transaction.amount > 0)
+        )).scalar() or 0
+        
+        # 4. Average Rating
+        avg_rating = (await session.execute(
+            select(func.avg(Review.rating))
+            .join(User, Review.to_user_id == User.id)
+            .where(User.telegram_id == message.chat.id)
+        )).scalar() or 0
+        
+    reg_date = user.created_at.strftime("%d.%m.%Y")
+    
+    text = (
+        f"📊 <b>Ваша статистика:</b>\n\n"
+        f"✅ Выполнено заказов: <b>{completed}</b>\n"
+        f"⚡️ Сейчас в работе: <b>{active}</b>\n"
+        f"💰 Заработано баллов (всего): <b>{total_earned}</b>\n"
+        f"⭐ Средний рейтинг: <b>{avg_rating:.1f}</b>\n\n"
+        f"🗓 В сервисе с: <b>{reg_date}</b>"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 @router.message(F.text == "🎗️ Мой статус")
 async def show_status_handler(message: Message):

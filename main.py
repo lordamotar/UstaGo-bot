@@ -39,8 +39,8 @@ async def main():
     dp.include_router(master_account_router)
     dp.include_router(client_order_router)
     dp.include_router(client_cabinet_router)
-    dp.include_router(start_router)
     dp.include_router(registration_router)
+    dp.include_router(start_router)
 
     # Start polling
     logger.info("Starting UstaGo bot...")

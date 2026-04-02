@@ -140,6 +140,28 @@ async def approve_master(callback: CallbackQuery):
         if not user: return
         profile = (await session.execute(select(MasterProfile).where(MasterProfile.id == master_id))).scalar_one()
         profile.status = MasterStatus.APPROVED
+        
+        # Referral reward for the inviter
+        if user.referred_by:
+            inviter = await session.get(User, user.referred_by)
+            if inviter:
+                inviter.points += 100
+                session.add(Transaction(
+                    user_id=inviter.id,
+                    amount=100,
+                    type=TransactionType.REFERRAL_BONUS,
+                    description=f"Бонус за регистрацию мастера {user.full_name}"
+                ))
+                try:
+                    await callback.bot.send_message(
+                        inviter.telegram_id,
+                        f"🎁 <b>Бонус за реферала!</b>\n\n"
+                        f"Приглашенный вами мастер <b>{user.full_name}</b> успешно прошел проверку.\n"
+                        f"Вам начислено <b>100 баллов</b>!",
+                        parse_mode="HTML"
+                    )
+                except Exception: pass
+                
         tg_id = user.telegram_id
         await session.commit()
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")

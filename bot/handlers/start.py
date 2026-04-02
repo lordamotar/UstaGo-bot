@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from bot.states import RegistrationStates
@@ -13,7 +13,7 @@ router = Router()
 from bot.keyboards.registration import get_role_keyboard
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, command: CommandStart = None):
+async def cmd_start(message: Message, state: FSMContext, command: CommandObject = None):
     """Handles the /start command."""
     await state.clear()
     
@@ -33,20 +33,29 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandStart =
         
         if not user:
             # Create new user with referral if provided
-            inviter = None
+            inviter_id = None
             if ref_id and ref_id != message.from_user.id:
-                inv_stmt = select(User).where(User.telegram_id == ref_id)
-                inv_res = await session.execute(inv_stmt)
-                inviter = inv_res.scalar_one_or_none()
+                inv_stmt = select(User.id).where(User.telegram_id == ref_id)
+                inviter_id = (await session.execute(inv_stmt)).scalar()
             
             user = User(
                 telegram_id=message.from_user.id,
                 full_name=message.from_user.full_name,
                 username=message.from_user.username,
-                referred_by=inviter.id if inviter else None
+                referred_by=inviter_id
             )
             session.add(user)
             await session.commit()
+            print(f"DEBUG: New user created {message.from_user.id}, ref: {inviter_id}")
+        else:
+            # If user exists but has no referrer, try to add it from the link
+            if not user.referred_by and ref_id and ref_id != message.from_user.id:
+                inv_stmt = select(User.id).where(User.telegram_id == ref_id)
+                inviter_id = (await session.execute(inv_stmt)).scalar()
+                if inviter_id:
+                    user.referred_by = inviter_id
+                    await session.commit()
+                    print(f"DEBUG: Referrer {inviter_id} added to existing user {message.from_user.id}")
 
     text = (
         "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"

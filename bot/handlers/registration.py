@@ -178,26 +178,55 @@ async def process_phone(message: Message, state: FSMContext):
         res = await session.execute(select(Category).where(Category.id.in_(selected_cat_ids)))
         categories = res.scalars().all()
         
-        profile = MasterProfile(
-            user_id=user.id,
-            description=data['description'],
-            experience=data['experience'],
-            status=MasterStatus.PENDING,
-            categories=categories
-        )
-        session.add(profile)
+        # Check for existing profile to avoid UniqueConstraint error
+        res_profile = await session.execute(select(MasterProfile).where(MasterProfile.user_id == user.id))
+        profile = res_profile.scalar_one_or_none()
+        
+        if profile:
+            profile.description = data['description']
+            profile.experience = data['experience']
+            profile.status = MasterStatus.PENDING
+            profile.categories = categories
+            # Update photos if they were uploaded
+            if data.get("photos"):
+                profile.work_photos = data.get("photos")
+        else:
+            profile = MasterProfile(
+                user_id=user.id,
+                description=data['description'],
+                experience=data['experience'],
+                status=MasterStatus.PENDING,
+                categories=categories,
+                work_photos=data.get("photos", [])
+            )
+            session.add(profile)
+            
         await session.flush()
         master_profile_id = profile.id
         await session.commit()
 
+    # Inform inviter that friend is pending
+    if user.referred_by:
+        async with async_session_maker() as session:
+            inviter = await session.get(User, user.referred_by)
+            if inviter:
+                try:
+                    await message.bot.send_message(
+                        inviter.telegram_id,
+                        f"👋 Ваш друг <b>{user.full_name}</b> зарегистрировался как мастер!\n"
+                        f"Как только он пройдет модерацию, вы получите свой бонус.",
+                        parse_mode="HTML"
+                    )
+                except Exception: pass
+
     # Notify Admins with action buttons
     admin_text = (
-        "🆕 Новая заявка от Мастера!\n\n"
-        f"Фио: {data['full_name']}\n"
-        f"Телефон: {phone}\n"
-        f"Стаж: {data['experience']}\n"
-        f"Описание: {data['description']}\n"
-        f"TG: @{message.from_user.username or 'no_username'} ({message.from_user.id})"
+        "🆕 <b>Новая заявка от Мастера!</b>\n\n"
+        f"👤 Фио: {data['full_name']}\n"
+        f"📱 Телефон: {phone}\n"
+        f"📅 Стаж: {data['experience']}\n"
+        f"📝 Описание: {data['description']}\n"
+        f"TG: @{message.from_user.username or 'no_username'} (<code>{message.from_user.id}</code>)"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -209,7 +238,7 @@ async def process_phone(message: Message, state: FSMContext):
     
     for admin_id in config.ADMIN_IDS:
         try:
-            await message.bot.send_message(admin_id, admin_text, reply_markup=keyboard)
+            await message.bot.send_message(admin_id, admin_text, reply_markup=keyboard, parse_mode="HTML")
         except Exception:
             pass
     await state.set_state(RegistrationStates.pending_approval)
