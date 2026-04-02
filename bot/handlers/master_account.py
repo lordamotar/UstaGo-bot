@@ -147,6 +147,7 @@ async def process_edit_description(message: Message, state: FSMContext):
 
 # --- PHOTO MANAGEMENT ---
 @router.message(F.text == "📸 Фото")
+@router.message(F.text == "📸 Фото")
 async def manage_master_photos(message: Message):
     async with async_session_maker() as session:
         stmt = select(MasterProfile).join(User).where(User.telegram_id == message.chat.id)
@@ -156,10 +157,38 @@ async def manage_master_photos(message: Message):
         photos = profile.work_photos or []
         count = len(photos)
         
-        await message.answer(f"📸 У вас загружено {count} фото работ (макс. 3).", reply_markup=get_photo_management_keyboard(count))
-        if photos:
-            media = [InputMediaPhoto(media=p) for p in photos]
-            await message.answer_media_group(media=media)
+        await message.answer(
+            f"📸 <b>Ваше портфолио</b> ({count}/3 фото):\n\n"
+            "Вы можете добавить новые фото или удалить существующие по одному.",
+            reply_markup=get_photo_management_keyboard(count),
+            parse_mode="HTML"
+        )
+        
+        for idx, p_id in enumerate(photos):
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                 InlineKeyboardButton(text="🗑️ Удалить это фото", callback_data=f"del_photo:{idx}")
+            ]])
+            await message.bot.send_photo(message.chat.id, photo=p_id, reply_markup=kb)
+
+@router.callback_query(F.data.startswith("del_photo:"))
+async def delete_photo_callback(callback: CallbackQuery):
+    idx = int(callback.data.split(":")[1])
+    async with async_session_maker() as session:
+        stmt = select(MasterProfile).join(User).where(User.telegram_id == callback.from_user.id)
+        profile = (await session.execute(stmt)).scalar_one_or_none()
+        
+        if profile and profile.work_photos:
+            photos = list(profile.work_photos)
+            if 0 <= idx < len(photos):
+                photos.pop(idx)
+                profile.work_photos = photos
+                await session.commit()
+                await callback.message.delete()
+                await callback.answer("✅ Фото удалено!")
+            else:
+                await callback.answer("❌ Ошибка: фото не найдено.")
+        else:
+            await callback.answer("❌ Профиль не найден.")
 
 @router.callback_query(F.data == "add_photos")
 async def add_photos_callback(callback: CallbackQuery, state: FSMContext):
@@ -169,25 +198,40 @@ async def add_photos_callback(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ManagePhotoStates.adding_photos, F.photo)
 async def process_adding_photos(message: Message, state: FSMContext):
+    # Safety check: if state is already being cleared, ignore
+    current_state = await state.get_state()
+    if current_state != ManagePhotoStates.adding_photos:
+        return
+
     data = await state.get_data()
     temp_photos = data.get("temp_photos", [])
+    
+    # Don't add more than 3
+    if len(temp_photos) >= 3:
+        return
+
     temp_photos.append(message.photo[-1].file_id)
     await state.update_data(temp_photos=temp_photos)
     
     if len(temp_photos) >= 3:
-        await finish_adding_photos(message, state)
+        # Clear state immediately to prevent concurrent calls
+        await state.set_state(None)
+        await finish_adding_photos(message, state, override_photos=temp_photos)
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Готово", callback_data="finish_add_photos")]])
         await message.answer(f"✅ Фото получено! ({len(temp_photos)}/3). Скиньте еще или нажмите Готово.", reply_markup=kb)
 
 @router.callback_query(F.data == "finish_add_photos")
 async def finish_adding_photos_callback(callback: CallbackQuery, state: FSMContext):
-    await finish_adding_photos(callback.message, state)
+    # Double check state
+    if await state.get_state() == ManagePhotoStates.adding_photos:
+        await state.set_state(None)
+        await finish_adding_photos(callback.message, state)
     await callback.answer()
 
-async def finish_adding_photos(message: Message, state: FSMContext):
+async def finish_adding_photos(message: Message, state: FSMContext, override_photos: list = None):
     data = await state.get_data()
-    new_photos = data.get("temp_photos", [])
+    new_photos = override_photos if override_photos else data.get("temp_photos", [])
     async with async_session_maker() as session:
         res = await session.execute(select(MasterProfile).join(User).where(User.telegram_id == message.chat.id))
         profile = res.scalar_one_or_none()
@@ -198,16 +242,7 @@ async def finish_adding_photos(message: Message, state: FSMContext):
     await message.answer("✅ Фото успешно обновлены!")
     await show_profile(message)
 
-@router.callback_query(F.data == "delete_photos")
-async def delete_photos_callback(callback: CallbackQuery):
-    async with async_session_maker() as session:
-        res = await session.execute(select(MasterProfile).join(User).where(User.telegram_id == callback.from_user.id))
-        profile = res.scalar_one_or_none()
-        if profile:
-            profile.work_photos = []
-            await session.commit()
-    await callback.message.edit_text("🗑️ Все фото удалены.")
-    await callback.answer()
+# (Removed old delete_photos bulk handler)
 
 @router.callback_query(F.data == "profile_back")
 async def profile_back_callback(callback: CallbackQuery, state: FSMContext):
@@ -255,9 +290,42 @@ async def show_active_orders(message: Message):
     text = "⚡️ <b>Заказы в работе:</b>\n"
     keyboard = []
     for o in orders:
-        text += f"\n📦 <b>{o.category.name}</b>\n👤 Клиент: {o.client.full_name}\n📱 Телефон: <code>{o.client.phone_number}</code>\n"
-        keyboard.append([InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"client_complete_order:{o.id}")])
+        link = f" (@{o.client.username})" if o.client.username else ""
+        text += (
+            f"\n🏷 <b>{o.category.name}</b>\n"
+            f"👤 Клиент: {o.client.full_name}{link}\n"
+            f"📱 Телефон: <code>{o.client.phone_number}</code>\n"
+        )
+        keyboard.append([InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"master_request_complete:{o.id}")])
+    
     await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@router.callback_query(F.data.startswith("master_request_complete:"))
+async def master_request_complete_callback(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
+    async with async_session_maker() as session:
+        stmt = select(Order).options(selectinload(Order.client)).where(Order.id == order_id)
+        order = (await session.execute(stmt)).scalar_one_or_none()
+        if not order: return
+        client_tg_id = order.client.telegram_id
+
+    # Notify Client
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⭐ Подтвердить и оценить", callback_data=f"client_complete_order:{order_id}")
+    ]])
+    
+    try:
+        await callback.bot.send_message(
+            client_tg_id,
+            f"👷 Мастер объявил о завершении <b>заказа №{order_id}</b>.\n\n"
+            f"Если работа выполнена, пожалуйста, подтвердите это и оставьте отзыв мастеу.",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        await callback.answer("✅ Запрос отправлен клиенту!", show_alert=True)
+        await callback.message.edit_text("⏳ Запрос на завершение отправлен клиенту. Ждем его подтверждения.")
+    except Exception:
+        await callback.answer("❌ Ошибка при уведомлении клиента.")
 
 @router.message(F.text == "✅ Выполненные заказы")
 async def show_completed_orders(message: Message):

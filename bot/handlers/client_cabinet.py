@@ -104,10 +104,28 @@ async def process_view_order(message: Message, order_id: int):
         await message.answer("❌ Заявка не найдена.")
         return
         
-    text = f"📋 <b>Заявка №{order.id}</b>\n"
+    status_icon = "🟢" if order.status == OrderStatus.ACTIVE else "⚪️" if order.status == OrderStatus.NEW else "✅" if order.status == OrderStatus.COMPLETED else "❌"
+    text = f"{status_icon} <b>Заявка №{order.id}</b>\n"
     text += f"📝 Описание: {order.description}\n"
     text += f"💰 Бюджет: {order.budget or 'Договорная'}\n\n"
     
+    if order.status == OrderStatus.ACTIVE:
+        accepted_bid = next((b for b in order.bids if b.status == "accepted"), None)
+        if accepted_bid:
+            m_user = accepted_bid.master.user
+            text += (
+                f"✅ <b>Мастер выбран:</b> {m_user.full_name}\n"
+                f"📱 Телефон: <code>{m_user.phone_number}</code>\n"
+                f"Telegram: @{m_user.username if m_user.username else '—'}\n\n"
+                "Выполняется работа над заказом."
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Завершить работу", callback_data=f"client_complete_order:{order.id}")],
+                [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"client_cancel_order:{order.id}")]
+            ])
+            await message.answer(text, parse_mode="HTML", reply_markup=kb)
+            return
+
     if not order.bids:
         text += "⏳ Откликов пока нет."
         await message.answer(text, parse_mode="HTML")
@@ -116,17 +134,48 @@ async def process_view_order(message: Message, order_id: int):
         await message.answer(text, parse_mode="HTML")
         
         for bid in order.bids:
-            m_user = bid.master.user
-            b_text = (
-                f"👷 <b>Мастер:</b> {m_user.full_name} ({bid.master.rating}⭐)\n"
-                f"🏷️ Цена: {bid.suggested_price or 'Договорная'}\n"
-                f"📩 Сообщение: {bid.message or '—'}"
-            )
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="👷 Профиль мастера", callback_data=f"client_view_master:{bid.master_id}:{order_id}")],
-                [InlineKeyboardButton(text="✅ Принять этого мастера", callback_data=f"client_accept_bid:{bid.id}")]
-            ])
-            await message.answer(b_text, parse_mode="HTML", reply_markup=kb)
+            if order.status == OrderStatus.NEW and bid.status != "rejected":
+                m_user = bid.master.user
+                b_text = (
+                    f"👷 <b>Мастер:</b> {m_user.full_name} ({bid.master.rating}⭐)\n"
+                    f"🏷️ Цена: {bid.suggested_price or 'Договорная'}\n"
+                    f"📩 Сообщение: {bid.message or '—'}"
+                )
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="👷 Профиль мастера", callback_data=f"client_view_master:{bid.master_id}:{order_id}")],
+                    [
+                        InlineKeyboardButton(text="✅ Принять", callback_data=f"client_accept_bid:{bid.id}"),
+                        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"client_reject_bid:{bid.id}")
+                    ]
+                ])
+                await message.answer(b_text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("client_reject_bid:"))
+async def client_reject_bid_callback(callback: CallbackQuery):
+    bid_id = int(callback.data.split(":")[1])
+    async with async_session_maker() as session:
+        stmt = select(Bid).options(joinedload(Bid.master).joinedload(MasterProfile.user)).where(Bid.id == bid_id)
+        bid = (await session.execute(stmt)).scalar_one_or_none()
+        if bid:
+            bid.status = "rejected"
+            master_tid = bid.master.user.telegram_id
+            order_id = bid.order_id
+            await session.commit()
+            
+            # Notify Master
+            try:
+                await callback.bot.send_message(
+                    master_tid,
+                    f"🔻 <b>Ваш отклик на заказ №{order_id} отклонен.</b>\n"
+                    "Не расстраивайтесь, в списке есть еще много заказов!",
+                    parse_mode="HTML"
+                )
+            except Exception: pass
+            
+            await callback.message.delete()
+            await callback.answer("❌ Отклик отклонен.")
+        else:
+            await callback.answer("❌ Ошибка: отклик не найден.")
 
 @router.callback_query(F.data.startswith("client_view_master:"))
 async def client_view_master_details(callback: CallbackQuery):
@@ -232,7 +281,11 @@ async def process_accept_bid(message: Message, bid_id: int):
         f"Telegram: @{master_user.username if master_user.username else '—'}\n\n"
         "Свяжитесь с мастером для уточнения деталей."
     )
-    await message.answer(client_text, parse_mode="HTML")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Завершить работу", callback_data=f"client_complete_order:{order.id}")],
+        [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"client_cancel_order:{order.id}")]
+    ])
+    await message.answer(client_text, parse_mode="HTML", reply_markup=kb)
     
     # Notify Master with FULL order details
     master_text = (
@@ -305,6 +358,16 @@ async def complete_order_handler(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("client_cancel_order:"))
 async def client_cancel_order_callback(callback: CallbackQuery):
     order_id = int(callback.data.split(":")[1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑️ Да, отменить", callback_data=f"client_confirm_cancel:{order_id}")],
+        [InlineKeyboardButton(text="🔙 Не отменять", callback_data=f"client_view_order:{order_id}")]
+    ])
+    await callback.message.edit_text(f"❓ Вы уверены, что хотите отменить <b>заказ №{order_id}</b>?", parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("client_confirm_cancel:"))
+async def client_confirm_cancel_order_callback(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
     
     async with async_session_maker() as session:
         # Load order with relations
@@ -325,21 +388,22 @@ async def client_cancel_order_callback(callback: CallbackQuery):
         old_status = order.status
         order.status = OrderStatus.CANCELLED
         
-        # If order was active, notify the accepted master
-        accepted_bid = next((b for b in order.bids if b.status == "accepted"), None)
-        master_user = accepted_bid.master.user if accepted_bid else None
+        # Notify all masters who bid on this order
+        bidders = [(b.master.user.telegram_id, b.status) for b in order.bids]
         
         await session.commit()
         
     await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
     
-    # Notify Master if ACTIVE
-    if old_status == OrderStatus.ACTIVE and master_user:
+    # Notify Master(s)
+    for tid, status in bidders:
         try:
+            status_desc = "был в работе" if status == "accepted" else "был предложен"
             await callback.bot.send_message(
-                master_user.telegram_id,
-                f"⚠️ <b>Заказ №{order_id} отменен клиентом.</b>\n"
-                f"Вы по-прежнему можете откликаться на другие заказы в списке!",
+                tid,
+                f"🗑️ <b>Заявка №{order_id} была удалена клиентом.</b>\n"
+                f"Ваш отклик {status_desc}, но теперь заказ больше не актуален.\n\n"
+                "Вы по-прежнему можете откликаться на другие заказы!",
                 parse_mode="HTML"
             )
         except Exception: pass

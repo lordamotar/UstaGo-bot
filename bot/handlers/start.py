@@ -87,6 +87,9 @@ async def handle_client_role(message: Message, state: FSMContext):
             user.role = UserRole.CLIENT
             await session.commit()
             
+            from bot.core.config import config
+            is_admin = message.from_user.id in config.ADMIN_IDS
+            
             # If no phone, request it
             if not user.phone_number:
                 kb = ReplyKeyboardMarkup(keyboard=[
@@ -98,9 +101,6 @@ async def handle_client_role(message: Message, state: FSMContext):
                     reply_markup=kb
                 )
                 return
-    
-            from bot.core.config import config
-            is_admin = message.from_user.id in config.ADMIN_IDS
     
     await message.answer(
         "🌆 <b>Добро пожаловать в кабинет клиента!</b>\n\n"

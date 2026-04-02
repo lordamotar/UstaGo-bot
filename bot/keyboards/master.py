@@ -29,7 +29,7 @@ def get_photo_management_keyboard(count: int) -> InlineKeyboardMarkup:
     """Inline menu for managing portfolio photos."""
     keyboard = [
         [InlineKeyboardButton(text="➕ Добавить фото", callback_data="add_photos")],
-        [InlineKeyboardButton(text="🗑️ Удалить фото", callback_data="delete_photos")],
+        # Bulk delete removed, individual buttons used under photos
         [InlineKeyboardButton(text="🔙 Назад", callback_data="profile_back")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
