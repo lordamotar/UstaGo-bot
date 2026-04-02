@@ -364,7 +364,33 @@ async def show_rating_handler(message: Message):
 async def show_balance_handler(message: Message):
     async with async_session_maker() as session:
         p = (await session.execute(select(User.points).where(User.telegram_id == message.chat.id))).scalar() or 0
-    await message.answer(f"💰 Ваш баланс: {p} баллов\n\nСтоимость отклика: 50 баллов.", reply_markup=get_balance_menu())
+    
+    text = (
+        f"💰 <b>Ваш баланс: {p} баллов</b>\n\n"
+        f"🏷️ Стоимость одного отклика: 50 баллов.\n\n"
+        f"💳 <b>Как пополнить баланс?</b>\n"
+        f"Переведите необходимую сумму на Kaspi (по номеру +7775...) и отправьте скриншот в поддержку @admin. "
+        f"1 тенге = 1 балл."
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=get_balance_menu())
+
+@router.message(F.text == "📜 История операций")
+async def show_transactions_handler(message: Message):
+    async with async_session_maker() as session:
+        stmt = select(Transaction).join(User).where(User.telegram_id == message.chat.id).order_by(Transaction.created_at.desc()).limit(10)
+        txs = (await session.execute(stmt)).scalars().all()
+    
+    if not txs:
+        await message.answer("📜 У вас пока нет операций по счету.")
+        return
+        
+    text = "📜 <b>Последние 10 операций:</b>\n"
+    for t in txs:
+        sign = "+" if t.amount > 0 else ""
+        date = t.created_at.strftime("%d.%m %H:%M")
+        text += f"\n📅 {date} | <b>{sign}{t.amount}</b>\n└ {t.description or '—'}"
+        
+    await message.answer(text, parse_mode="HTML")
 
 @router.message(F.text == "⚙️ Настройки")
 async def show_settings_handler(message: Message):
@@ -399,6 +425,24 @@ async def toggle_notif(m: Message):
         u.notifications_enabled = not u.notifications_enabled
         await session.commit()
     await m.answer(f"🔔 Уведомления: {'ВКЛ' if u.notifications_enabled else 'ВЫКЛ'}")
+
+@router.message(F.text == "🚫 Режим «Не беспокоить»")
+async def toggle_dnd(m: Message):
+    async with async_session_maker() as session:
+        u = (await session.execute(select(User).where(User.telegram_id == m.chat.id))).scalar()
+        u.do_not_disturb = not u.do_not_disturb
+        status = "ВКЛ (новые заказы не приходят)" if u.do_not_disturb else "ВЫКЛ"
+        await session.commit()
+    await m.answer(f"🌙 Режим «Не беспокоить»: {status}")
+
+@router.message(F.text == "🔑 Сменить статус видимости")
+async def toggle_visibility(m: Message):
+    async with async_session_maker() as session:
+        u = (await session.execute(select(User).where(User.telegram_id == m.chat.id))).scalar()
+        u.visible_for_new_orders = not u.visible_for_new_orders
+        status = "ВИДИМ" if u.visible_for_new_orders else "СКРЫТ (вы не получаете уведомлений)"
+        await session.commit()
+    await m.answer(f"🕵️ Ваш статус: {status}")
 
 @router.message(F.text == "📍 Районы работы")
 async def manage_districts(m: Message, state: FSMContext):

@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from bot.states import OrderCreationStates
 from database.engine import async_session_maker
 from database.models import User, Order, Category, District, OrderStatus, MasterProfile, UserRole
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from bot.keyboards.client import get_inline_categories, get_inline_districts, get_order_confirmation_keyboard
 
@@ -12,6 +12,19 @@ router = Router()
 
 @router.message(F.text == "➕ Создать заявку")
 async def start_order_creation(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        user_stmt = select(User).where(User.telegram_id == message.from_user.id)
+        user = (await session.execute(user_stmt)).scalar_one_or_none()
+        
+    # 1. Check if we have user's phone number
+    if not user or not user.phone_number:
+        await state.set_state(OrderCreationStates.requiring_phone)
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📱 Поделиться контактом", request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
+        await message.answer("Для создания заявки нам необходим ваш номер телефона. Пожалуйста, поделитесь контактом:", reply_markup=kb)
+        return
+
+    # 2. Proceed to category selection
     await state.set_state(OrderCreationStates.selecting_category)
     async with async_session_maker() as session:
         res = await session.execute(select(Category))
@@ -22,6 +35,30 @@ async def start_order_creation(message: Message, state: FSMContext):
         parse_mode="Markdown",
         reply_markup=get_inline_categories(categories)
     )
+
+@router.message(OrderCreationStates.requiring_phone, F.contact)
+async def process_phone_contact(message: Message, state: FSMContext):
+    """Saves shared contact and proceeds to category selection."""
+    phone = message.contact.phone_number
+    async with async_session_maker() as session:
+        # Update user's phone number
+        await session.execute(update(User).where(User.telegram_id == message.from_user.id).values(phone_number=phone))
+        await session.commit()
+    
+    await message.answer(f"✅ Номер {phone} привязан к вашему профилю.")
+    
+    # Now start actual order creation
+    await state.set_state(OrderCreationStates.selecting_category)
+    async with async_session_maker() as session:
+        res = await session.execute(select(Category))
+        categories = res.scalars().all()
+    
+    from bot.keyboards.client import get_client_main_menu
+    from bot.core.config import config
+    is_admin = message.from_user.id in config.ADMIN_IDS
+    await message.answer("🏷️ *Выберите категорию услуги:*", parse_mode="Markdown", reply_markup=get_inline_categories(categories))
+    # Return to normal UI buttons
+    await message.answer("🛠 Используйте кнопки снизу для навигации.", reply_markup=get_client_main_menu(is_admin=is_admin))
 
 @router.callback_query(OrderCreationStates.selecting_category, F.data.startswith("sel_cat:"))
 async def process_cat_selection(callback: CallbackQuery, state: FSMContext):
@@ -128,6 +165,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             User.role == UserRole.MASTER,
             User.notifications_enabled == True,
             User.visible_for_new_orders == True,
+            User.do_not_disturb == False,
             Category.id == data['category_id']
         )
         

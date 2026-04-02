@@ -123,28 +123,37 @@ from bot.keyboards.master import get_master_main_menu
 @router.message(F.text.in_(["🔨 Я мастер", "🔨 Стать мастером"]))
 async def handle_master_role(message: Message, state: FSMContext):
     """
-    Checks if user is already a MASTER, otherwise starts registration flow.
+    Checks if user already has a MasterProfile, otherwise starts registration flow.
     """
+    from database.models import MasterProfile
+    from sqlalchemy.orm import selectinload
+    
     async with async_session_maker() as session:
-        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        # Load user with master_profile to see if they EVER registered
+        stmt = select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.from_user.id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
         
-    if user and user.role == UserRole.MASTER:
-        await message.answer(
-            "📍 Вы уже зарегистрированы как мастер в нашей системе!\n\n"
-            "Вы можете управлять своим профилем и заказами в меню ниже:",
-            reply_markup=get_master_main_menu()
-        )
-        return
+        if user and user.master_profile:
+            # User IS a master, just return them to master mode
+            user.role = UserRole.MASTER
+            await session.commit()
+            
+            from bot.core.config import config
+            is_admin = message.from_user.id in config.ADMIN_IDS
+            
+            await message.answer(
+                "✨ <b>С возвращением в кабинет мастера!</b>\n\n"
+                "Ваш профиль активен. Вы можете просматривать заказы и управлять своей анкетой.",
+                parse_mode="HTML",
+                reply_markup=get_master_main_menu(is_admin=is_admin)
+            )
+            return
 
+    # If NOT a master - start registration
     text = (
-        "🧰 Отлично! Вы на шаг ближе к бесплатным заказам.\n\n"
-        "Что вы получите:\n"
-        "✅ Заказы от клиентов прямо в Telegram\n"
-        "✅ Возможность приглашать коллег и получать баллы\n"
-        "✅ Знак «Аккредитованный специалист» после проверки\n\n"
-        "Для старта заполните короткую анкету:\n"
+        "🧰 Отлично! Вы на шаг ближе к заказам.\n\n"
+        "Мы поможем вам найти клиентов. Заполните короткую анкету:\n"
         "1. Ваше имя\n"
         "2. Категории услуг\n"
         "3. Краткое описание\n"
@@ -156,3 +165,4 @@ async def handle_master_role(message: Message, state: FSMContext):
     
     await state.set_state(RegistrationStates.entering_name)
     await message.answer(text)
+

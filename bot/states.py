@@ -26,6 +26,7 @@ class SettingsStates(StatesGroup):
     choosing_districts = State()
 
 class OrderCreationStates(StatesGroup):
+    requiring_phone = State()
     selecting_category = State()
     entering_description = State()
     entering_budget = State()
