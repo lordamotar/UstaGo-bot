@@ -31,3 +31,7 @@ class OrderCreationStates(StatesGroup):
     entering_budget = State()
     selecting_district = State()
     confirming = State()
+
+class BidStates(StatesGroup):
+    entering_price = State()
+    entering_message = State()

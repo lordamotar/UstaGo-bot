@@ -8,6 +8,7 @@ from bot.handlers.start import router as start_router
 from bot.handlers.admin import router as admin_router
 from bot.handlers.master_account import router as master_account_router
 from bot.handlers.client_order import router as client_order_router
+from bot.handlers.client_cabinet import router as client_cabinet_router
 
 from bot.middlewares.logging import LoggingMiddleware
 
@@ -37,6 +38,7 @@ async def main():
     dp.include_router(admin_router)
     dp.include_router(master_account_router)
     dp.include_router(client_order_router)
+    dp.include_router(client_cabinet_router)
     dp.include_router(start_router)
     dp.include_router(registration_router)
 

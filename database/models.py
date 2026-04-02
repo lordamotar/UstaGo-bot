@@ -142,6 +142,7 @@ class Bid(Base):
     master_id: Mapped[int] = mapped_column(ForeignKey("master_profiles.id"))
     suggested_price: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50), default="pending")
+    message: Mapped[Optional[str]] = mapped_column(Text)
     
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     

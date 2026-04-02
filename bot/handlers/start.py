@@ -86,7 +86,7 @@ async def handle_client_role(message: Message, state: FSMContext):
 
 from bot.keyboards.master import get_master_main_menu
 
-@router.message(F.text == "🔨 Я мастер")
+@router.message(F.text.in_(["🔨 Я мастер", "🔨 Стать мастером"]))
 async def handle_master_role(message: Message, state: FSMContext):
     """
     Checks if user is already a MASTER, otherwise starts registration flow.

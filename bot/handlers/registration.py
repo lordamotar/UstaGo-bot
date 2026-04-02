@@ -151,6 +151,7 @@ async def process_phone(message: Message, state: FSMContext):
     """Final registration step: saves everything to database including phone."""
     phone = message.contact.phone_number
     data = await state.get_data()
+    selected_cat_ids = data.get("selected_categories", [])
     
     # DB Save Logic
     async with async_session_maker() as session:
@@ -173,11 +174,16 @@ async def process_phone(message: Message, state: FSMContext):
             user.full_name = data['full_name']
             user.phone_number = phone
         
+        # Load Category objects
+        res = await session.execute(select(Category).where(Category.id.in_(selected_cat_ids)))
+        categories = res.scalars().all()
+        
         profile = MasterProfile(
             user_id=user.id,
             description=data['description'],
             experience=data['experience'],
-            status=MasterStatus.PENDING
+            status=MasterStatus.PENDING,
+            categories=categories
         )
         session.add(profile)
         await session.flush()

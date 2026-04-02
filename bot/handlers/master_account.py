@@ -3,12 +3,13 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, MasterStatus, Category
+from database.models import User, MasterProfile, MasterStatus, Category, Order, Bid, OrderStatus, Transaction, TransactionType
 from bot.keyboards.master import (
     get_master_main_menu, get_profile_menu, get_orders_menu, 
     get_balance_menu, get_settings_menu, build_districts_keyboard
 )
-from bot.states import EditProfileStates, ManagePhotoStates, SettingsStates
+from bot.states import EditProfileStates, ManagePhotoStates, SettingsStates, BidStates
+from aiogram.fsm.context import FSMContext
 
 router = Router()
 
@@ -261,10 +262,122 @@ async def show_available_orders(message: Message):
         return
         
     text = f"🔄 *Доступные заказы ({len(orders)}):*\n\n"
+    keyboard = []
     for o in orders:
-        text += f"📦 *{o.category.name}*\n💰 Бюджет: {o.budget or 'Договорная'}\n📝 {o.description[:100]}...\n/order_{o.id}\n\n"
+        text += f"📦 *{o.category.name}*\n💰 Бюджет: {o.budget or 'Договорная'}\n📍 {o.district.name if o.district else '—'}\n\n"
+        keyboard.append([InlineKeyboardButton(text=f"📥 Заказ №{o.id}", callback_data=f"master_view_order:{o.id}")])
+    
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@router.callback_query(F.data.startswith("master_view_order:"))
+async def master_view_order_callback(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
+    await show_order_details(callback.message, order_id)
+    await callback.answer()
+
+@router.message(F.text.regexp(r"^/order_?(\d+)$"))
+async def view_order_details(message: Message):
+    # Matches /order_6 or /order6
+    import re
+    match = re.match(r"^/order_?(\d+)$", message.text)
+    order_id = int(match.group(1))
+    await show_order_details(message, order_id)
+
+async def show_order_details(message: Message, order_id: int):
+    async with async_session_maker() as session:
+        stmt = select(Order).options(selectinload(Order.category), selectinload(Order.district)).where(Order.id == order_id)
+        res = await session.execute(stmt)
+        order = res.scalar_one_or_none()
+    
+    if not order:
+        await message.answer("❌ Заказ не найден.")
+        return
+    
+    text = (
+        f"📦 *Заказ №{order.id}: {order.category.name}*\n\n"
+        f"📝 Описание: {order.description}\n"
+        f"💰 Бюджет: {order.budget or 'Договорная'}\n"
+        f"📍 Район: {order.district.name if order.district else '—'}\n"
+        f"📅 Создан: {order.created_at.strftime('%d.%m %H:%M')}\n\n"
+        f"🏷️ *Стоимость отклика: 50 баллов.*"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💬 Откликнуться", callback_data=f"start_bid:{order.id}")
+    ]])
+    await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+
+@router.callback_query(F.data.startswith("start_bid:"))
+async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == callback.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
         
-    await message.answer(text, parse_mode="Markdown")
+        if not user or user.points < 50:
+            await callback.answer("❌ У вас недостаточно баллов для отклика (нужно 50).", show_alert=True)
+            return
+
+    await state.update_data(bid_order_id=order_id)
+    await state.set_state(BidStates.entering_price)
+    await callback.message.answer("💰 *Введите вашу цену за работу (в тенге):*")
+    await callback.answer()
+
+@router.message(BidStates.entering_price)
+async def process_bid_price(message: Message, state: FSMContext):
+    await state.update_data(bid_price=message.text)
+    await state.set_state(BidStates.entering_message)
+    await message.answer("📩 *Напишите мастерское сообщение для клиента:*")
+
+@router.message(BidStates.entering_message)
+async def process_bid_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data['bid_order_id']
+    price_str = data['bid_price']
+    msg = message.text
+    
+    async with async_session_maker() as session:
+        m_stmt = select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.from_user.id)
+        user = (await session.execute(m_stmt)).scalar_one()
+        
+        # Deduct
+        user.points -= 50
+        session.add(Transaction(user_id=user.id, amount=-50, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}"))
+        
+        import re
+        price_val = None
+        digits = re.findall(r'\d+', price_str)
+        if digits: price_val = int("".join(digits))
+        
+        bid = Bid(order_id=order_id, master_id=user.master_profile.id, suggested_price=price_val, message=msg)
+        session.add(bid)
+        await session.flush() # Get bid.id
+        
+        # Notify
+        o_stmt = select(Order).options(selectinload(Order.client)).where(Order.id == order_id)
+        order = (await session.execute(o_stmt)).scalar_one()
+        client_tg_id = order.client.telegram_id
+        
+        await session.commit()
+    
+    await message.answer("✅ Отклик успешно отправлен!")
+    await state.clear()
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Посмотреть отклик и детали", callback_data=f"client_view_order:{order_id}")],
+        [InlineKeyboardButton(text="✅ Принять отклик", callback_data=f"client_accept_bid:{bid.id}")]
+    ])
+    
+    await message.bot.send_message(
+        client_tg_id, 
+        f"🔔 <b>Новый отклик на заказ №{order_id}!</b>\n💰 Предложенная цена: {price_str}\n\n"
+        f"👷 Мастер: {user.full_name}\n"
+        f"📩 Сообщение: {msg[:100]}...", 
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
 
 @router.message(F.text == "⏳ Мои активные заказы")
 async def show_active_orders(message: Message):
@@ -275,11 +388,6 @@ async def show_completed_orders(message: Message):
     await message.answer("✅ В вашей истории пока нет завершенных заказов.")
 
 # --- BALANCE SUBMENU ---
-# @router.message(F.text == "💸 Вывести баллы")
-# @router.message(F.text == "💸 Пополнить баллы")
-# async def balance_placeholder(message: Message):
-#     await message.answer("🚧 Финансовые операции пока производятся через администратора. Функция оплаты в боте скоро появится.")
-
 @router.message(F.text == "📜 История операций")
 async def show_balance_history(message: Message):
     async with async_session_maker() as session:

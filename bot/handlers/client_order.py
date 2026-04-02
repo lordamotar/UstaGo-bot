@@ -1,9 +1,9 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from bot.states import OrderCreationStates
 from database.engine import async_session_maker
-from database.models import User, Order, Category, District, OrderStatus, MasterProfile
+from database.models import User, Order, Category, District, OrderStatus, MasterProfile, UserRole
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from bot.keyboards.client import get_inline_categories, get_inline_districts, get_order_confirmation_keyboard
@@ -86,9 +86,22 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
     async with async_session_maker() as session:
-        # Get User ID
-        res = await session.execute(select(User.id).where(User.telegram_id == callback.from_user.id))
-        user_id = res.scalar()
+        # Get User internal ID by telegram_id
+        user_stmt = select(User).where(User.telegram_id == callback.from_user.id)
+        user_res = await session.execute(user_stmt)
+        user = user_res.scalar_one_or_none()
+        
+        if not user:
+            # Fallback if somehow user isn't in DB - should not happen if they used /start
+            user = User(
+                telegram_id=callback.from_user.id,
+                full_name=callback.from_user.full_name,
+                username=callback.from_user.username
+            )
+            session.add(user)
+            await session.flush() # Ensure we get user.id before order creation
+        
+        user_id = user.id
         
         new_order = Order(
             client_id=user_id,
@@ -99,8 +112,48 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             status=OrderStatus.NEW
         )
         session.add(new_order)
-        await session.commit()
+        await session.flush() # Get ID without commit yet
         order_id = new_order.id
+        
+        # Get category and district names
+        cat = await session.get(Category, data['category_id'])
+        dist = await session.get(District, data['district_id'])
+        
+        # Notify Masters
+        # We search users whose master_profile has the order category
+        master_stmt = select(User).join(User.master_profile).join(MasterProfile.categories).where(
+            User.role == UserRole.MASTER,
+            User.notifications_enabled == True,
+            User.visible_for_new_orders == True,
+            Category.id == data['category_id']
+        )
+        
+        res = await session.execute(master_stmt)
+        masters_to_notify = res.scalars().all()
+        print(f"DEBUG: Found {len(masters_to_notify)} masters to notify for order {order_id}")
+        
+        for master in masters_to_notify:
+            try:
+                # SKIP notifying the person who created the order if they are also a master
+                if master.telegram_id == callback.from_user.id:
+                    continue
+                    
+                master_text = (
+                    f"🆕 *Новый заказ: {cat.name}!*\n\n"
+                    f"📝 {data['description']}\n"
+                    f"💰 Бюджет: {data['budget'] or 'Договорная'}\n"
+                    f"📍 Район: {dist.name}"
+                )
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="📥 Посмотреть и откликнуться", callback_data=f"master_view_order:{order_id}")
+                ]])
+                
+                await callback.bot.send_message(master.telegram_id, master_text, parse_mode="Markdown", reply_markup=keyboard)
+            except Exception as e:
+                print(f"ERROR: Failed to notify master {master.telegram_id}: {e}")
+        
+        await session.commit()
         
     await callback.message.edit_text(f"🚀 *Заявка №{order_id} опубликована!*\n\nМастера получили уведомления и скоро начнут откликаться.", parse_mode="Markdown")
     await state.clear()
