@@ -68,7 +68,6 @@ async def handle_client_role(message: Message, state: FSMContext):
     await state.clear()
     
     async with async_session_maker() as session:
-        # Check if already a master
         stmt = select(User).where(User.telegram_id == message.from_user.id)
         res = await session.execute(stmt)
         user = res.scalar_one_or_none()
@@ -76,13 +75,43 @@ async def handle_client_role(message: Message, state: FSMContext):
         if user:
             user.role = UserRole.CLIENT
             await session.commit()
+            
+            # If no phone, request it
+            if not user.phone_number:
+                kb = ReplyKeyboardMarkup(keyboard=[
+                    [KeyboardButton(text="📱 Отправить номер", request_contact=True)]
+                ], resize_keyboard=True)
+                await message.answer(
+                    "📱 Для продолжения нам нужен ваш номер телефона. "
+                    "Он будет передан мастеру только после того, как вы одобрите его отклик.",
+                    reply_markup=kb
+                )
+                return
     
     await message.answer(
-        "🌆 *Добро пожаловать в кабинет клиента!*\n\n"
+        "🌆 <b>Добро пожаловать в кабинет клиента!</b>\n\n"
         "Здесь вы можете создать заявку и получить отклики от лучших мастеров города Семей.",
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=get_client_main_menu()
     )
+
+@router.message(F.contact)
+async def handle_contact(message: Message):
+    """Saves user phone number from contact sharing."""
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        if user:
+            user.phone_number = message.contact.phone_number
+            await session.commit()
+            
+            from bot.keyboards.client import get_client_main_menu
+            await message.answer(
+                "✅ Номер сохранен! Теперь вы можете создавать заявки.",
+                reply_markup=get_client_main_menu()
+            )
 
 from bot.keyboards.master import get_master_main_menu
 

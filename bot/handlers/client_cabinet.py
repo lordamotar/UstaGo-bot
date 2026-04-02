@@ -1,5 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from bot.states import ReviewStates
 from database.engine import async_session_maker
 from database.models import User, Order, Bid, OrderStatus, MasterProfile
 from sqlalchemy import select
@@ -18,27 +20,40 @@ async def show_my_orders(message: Message):
             await message.answer("❌ Пользователь не найден.")
             return
 
-        stmt = select(Order).options(selectinload(Order.category)).where(
+        # NEW Orders
+        new_stmt = select(Order).options(selectinload(Order.category)).where(
             Order.client_id == user.id,
-            Order.status != OrderStatus.CANCELLED
+            Order.status == OrderStatus.NEW
         ).order_by(Order.created_at.desc())
         
-        o_res = await session.execute(stmt)
-        orders = o_res.scalars().all()
+        # ACTIVE Orders
+        active_stmt = select(Order).options(selectinload(Order.category)).where(
+            Order.client_id == user.id,
+            Order.status == OrderStatus.ACTIVE
+        ).order_by(Order.created_at.desc())
         
-    if not orders:
-        await message.answer("⏳ У вас пока нет активных заявок.")
+        orders_new = (await session.execute(new_stmt)).scalars().all()
+        orders_active = (await session.execute(active_stmt)).scalars().all()
+        
+    if not orders_new and not orders_active:
+        await message.answer("⏳ У вас пока нет заявок.")
         return
         
-    text = "📋 <b>Ваши заявки:</b>\n"
-    keyboard = []
-    
-    for o in orders:
-        status_text = "🆕 Новая" if o.status == OrderStatus.NEW else "✅ Активна"
-        text += f"\n📦 <b>{o.category.name}</b> ({status_text})\n📝 {o.description[:50]}...\n"
-        keyboard.append([InlineKeyboardButton(text=f"🔍 Детали заявки №{o.id}", callback_data=f"client_view_order:{o.id}")])
-        
-    await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    if orders_active:
+        text = "⚡️ <b>Активные заказы (в работе):</b>\n"
+        keyboard = []
+        for o in orders_active:
+            text += f"\n📦 <b>{o.category.name}</b>\n📝 {o.description[:50]}...\n"
+            keyboard.append([InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"client_complete_order:{o.id}")])
+        await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+    if orders_new:
+        text = "🆕 <b>Новые заявки (сбор откликов):</b>\n"
+        keyboard = []
+        for o in orders_new:
+            text += f"\n📦 <b>{o.category.name}</b>\n📝 {o.description[:50]}...\n"
+            keyboard.append([InlineKeyboardButton(text=f"🔍 Детали заявки №{o.id}", callback_data=f"client_view_order:{o.id}")])
+        await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @router.callback_query(F.data.startswith("client_view_order:"))
 async def client_view_order_callback(callback: CallbackQuery):
@@ -150,3 +165,113 @@ async def process_accept_bid(message: Message, bid_id: int):
         "Свяжитесь с клиентом прямо сейчас!"
     )
     await message.bot.send_message(master_user.telegram_id, master_text, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("client_complete_order:"))
+async def complete_order_handler(callback: CallbackQuery, state: FSMContext):
+    order_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        # Find order and accepted bid
+        stmt = select(Order).options(
+            selectinload(Order.bids).joinedload(Bid.master).joinedload(MasterProfile.user),
+            selectinload(Order.client)
+        ).where(Order.id == order_id)
+        res = await session.execute(stmt)
+        order = res.scalar_one_or_none()
+        
+        if not order or order.status != OrderStatus.ACTIVE:
+            await callback.answer("❌ Заказ не найден или уже завершен.")
+            return
+
+        # Mark order as completed
+        order.status = OrderStatus.COMPLETED
+        
+        # Find accepted master
+        accepted_bid = next((b for b in order.bids if b.status == "accepted"), None)
+        master_user = accepted_bid.master.user if accepted_bid else None
+        client_user = order.client
+        
+        await session.commit()
+    
+    # Notify BOTH parties
+    # Check who clicked
+    is_master = (callback.from_user.id == master_user.telegram_id) if master_user else False
+    
+    if is_master:
+        # Master finished. Notify master he is done and notify client to rate.
+        await callback.message.answer("✅ Вы завершили работу над заказом! Ожидайте отзыв от клиента.")
+        if client_user:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"start_review:{order_id}")
+            ]])
+            await callback.bot.send_message(
+                client_user.telegram_id, 
+                f"👷 Мастер завершил работу над вашим заказом №{order_id}. "
+                "Пожалуйста, оцените качество услуги:", 
+                reply_markup=kb
+            )
+    else:
+        # Client finished. Start review flow immediately.
+        await callback.message.answer("✅ Заказ завершен! Теперь вы можете оставить отзыв.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rate:{order_id}:{i}") for i in range(1, 6)
+        ]])
+        await callback.message.answer("Выберите оценку:", reply_markup=kb)
+        
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("start_review:"))
+async def start_review_callback(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rate:{order_id}:{i}") for i in range(1, 6)
+    ]])
+    await callback.message.edit_text("Выберите оценку работы мастера:", reply_markup=kb)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("rate:"))
+async def handle_rating(callback: CallbackQuery, state: FSMContext):
+    tokens = callback.data.split(":")
+    order_id = int(tokens[1])
+    rating = int(tokens[2])
+    await state.update_data(review_order_id=order_id, rating=rating)
+    
+    await callback.message.edit_text(f"Оценка {rating}⭐ принята. Напишите краткий отзыв о работе:")
+    await state.set_state(ReviewStates.comment)
+    await callback.answer()
+
+@router.message(ReviewStates.comment)
+async def handle_review_comment(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data['review_order_id']
+    rating = data['rating']
+    comment = message.text
+    
+    from database.models import Review
+    async with async_session_maker() as session:
+        # Find the master
+        from database.models import Bid # just in case
+        stmt = select(Bid).options(joinedload(Bid.master)).where(Bid.order_id == order_id, Bid.status == 'accepted')
+        res = await session.execute(stmt)
+        bid = res.scalar_one_or_none()
+        
+        if bid:
+            # Need real user id of client
+            user_stmt = select(User).where(User.telegram_id == message.from_user.id)
+            user = (await session.execute(user_stmt)).scalar_one()
+            
+            new_review = Review(
+                order_id=order_id,
+                from_user_id=user.id,
+                to_user_id=bid.master.user_id,
+                rating=rating,
+                comment=comment
+            )
+            session.add(new_review)
+            await session.commit()
+
+    await message.answer("🙏 Спасибо за ваш отзыв! Это помогает мастерам становиться лучше.")
+    await state.clear()
+    
+    from bot.keyboards.client import get_client_main_menu
+    await message.answer("Вы в главном меню.", reply_markup=get_client_main_menu())

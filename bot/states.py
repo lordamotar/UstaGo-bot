@@ -35,3 +35,7 @@ class OrderCreationStates(StatesGroup):
 class BidStates(StatesGroup):
     entering_price = State()
     entering_message = State()
+
+class ReviewStates(StatesGroup):
+    rating = State()
+    comment = State()
