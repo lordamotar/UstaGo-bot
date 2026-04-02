@@ -1,9 +1,9 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 from bot.states import ReviewStates
 from database.engine import async_session_maker
-from database.models import User, Order, Bid, OrderStatus, MasterProfile
+from database.models import User, Order, Bid, OrderStatus, MasterProfile, Review
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload, joinedload
 
@@ -118,10 +118,60 @@ async def process_view_order(message: Message, order_id: int):
                 f"🏷️ Цена: {bid.suggested_price or 'Договорная'}\n"
                 f"📩 Сообщение: {bid.message or '—'}"
             )
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ Принять этого мастера", callback_data=f"client_accept_bid:{bid.id}")
-            ]])
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👷 Профиль мастера", callback_data=f"client_view_master:{bid.master_id}:{order_id}")],
+                [InlineKeyboardButton(text="✅ Принять этого мастера", callback_data=f"client_accept_bid:{bid.id}")]
+            ])
             await message.answer(b_text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("client_view_master:"))
+async def client_view_master_details(callback: CallbackQuery):
+    """Shows full master profile to a client who received a bid."""
+    parts = callback.data.split(":")
+    master_id = int(parts[1])
+    order_id = int(parts[2])
+    
+    async with async_session_maker() as session:
+        # 1. Load Master's info
+        stmt = select(MasterProfile).options(
+            selectinload(MasterProfile.user)
+        ).where(MasterProfile.id == master_id)
+        res = await session.execute(stmt)
+        profile = res.scalar_one_or_none()
+        
+        if not profile:
+            await callback.answer("Master profile not found.")
+            return
+            
+        # 2. Get Reviews
+        rev_stmt = select(Review).where(Review.to_user_id == profile.user_id).order_by(Review.created_at.desc()).limit(5)
+        reviews = (await session.execute(rev_stmt)).scalars().all()
+        
+    text = (
+        f"👷 <b>Профиль мастера: {profile.user.full_name}</b>\n\n"
+        f"⭐ Рейтинг: {profile.rating:.1f} / 5.0\n"
+        f"⏳ Стаж: {profile.experience or '—'}\n\n"
+        f"📝 <b>О себе:</b>\n{profile.description or '—'}\n\n"
+    )
+    
+    if reviews:
+        text += "💬 <b>Последние отзывы:</b>\n"
+        for r in reviews:
+            stars = "⭐" * r.rating
+            text += f"\n{stars}\n«{r.comment}»\n"
+    else:
+        text += "\n💬 Отзывов пока нет.\n"
+        
+    # Photos
+    if profile.work_photos:
+        media = [InputMediaPhoto(media=p) for p in profile.work_photos]
+        await callback.message.answer_media_group(media=media)
+        
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔙 Назад к списку откликов", callback_data=f"client_view_order:{order_id}")
+    ]])
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("client_accept_bid:"))
 async def client_accept_bid_callback(callback: CallbackQuery):
@@ -138,10 +188,14 @@ async def accept_master_bid_msg(message: Message):
 
 async def process_accept_bid(message: Message, bid_id: int):
     async with async_session_maker() as session:
-        # Load Bid with relations
+        # Load Bid with ALL necessary relations
         stmt = select(Bid).options(
             joinedload(Bid.master).joinedload(MasterProfile.user),
-            joinedload(Bid.order).joinedload(Order.client)
+            joinedload(Bid.order).options(
+                joinedload(Order.client),
+                joinedload(Order.category),
+                joinedload(Order.district)
+            )
         ).where(Bid.id == bid_id)
         
         res = await session.execute(stmt)
@@ -175,13 +229,17 @@ async def process_accept_bid(message: Message, bid_id: int):
     )
     await message.answer(client_text, parse_mode="HTML")
     
-    # Notify Master
+    # Notify Master with FULL order details
     master_text = (
         f"🎉 <b>Клиент принял ваш отклик на заказ №{order.id}!</b>\n\n"
+        f"📦 <b>Заказ №{order.id}: {order.category.name}</b>\n\n"
+        f"📝 {order.description}\n"
+        f"💰 Бюджет: {order.budget or 'Договорная'}\n"
+        f"📍 Район: {order.district.name if order.district else '—'}\n"
         f"👤 Клиент: {client_user.full_name}\n"
         f"📱 Телефон: <code>{client_user.phone_number}</code>\n"
         f"Telegram: @{client_user.username if client_user.username else '—'}\n\n"
-        "Свяжитесь с клиентом прямо сейчас!"
+        "🟢 <b>Свяжитесь с клиентом прямо сейчас!</b>"
     )
     await message.bot.send_message(master_user.telegram_id, master_text, parse_mode="HTML")
 
@@ -267,10 +325,12 @@ async def handle_review_comment(message: Message, state: FSMContext):
     comment = message.text
     
     from database.models import Review
+    from sqlalchemy import func
     async with async_session_maker() as session:
-        # Find the master
-        from database.models import Bid # just in case
-        stmt = select(Bid).options(joinedload(Bid.master)).where(Bid.order_id == order_id, Bid.status == 'accepted')
+        # Find the master and his profile
+        stmt = select(Bid).options(
+            joinedload(Bid.master).joinedload(MasterProfile.user)
+        ).where(Bid.order_id == order_id, Bid.status == 'accepted')
         res = await session.execute(stmt)
         bid = res.scalar_one_or_none()
         
@@ -279,6 +339,7 @@ async def handle_review_comment(message: Message, state: FSMContext):
             user_stmt = select(User).where(User.telegram_id == message.from_user.id)
             user = (await session.execute(user_stmt)).scalar_one()
             
+            # Save new review
             new_review = Review(
                 order_id=order_id,
                 from_user_id=user.id,
@@ -287,6 +348,16 @@ async def handle_review_comment(message: Message, state: FSMContext):
                 comment=comment
             )
             session.add(new_review)
+            await session.flush()
+            
+            # RECALCULATE average rating
+            avg_stmt = select(func.avg(Review.rating)).where(Review.to_user_id == bid.master.user_id)
+            new_avg_rating = (await session.execute(avg_stmt)).scalar() or 0
+            
+            # Update MasterProfile rating
+            profile = bid.master
+            profile.rating = float(new_avg_rating)
+            
             await session.commit()
 
     await message.answer("🙏 Спасибо за ваш отзыв! Это помогает мастерам становиться лучше.")
