@@ -427,13 +427,58 @@ async def toggle_notif(m: Message):
     await m.answer(f"🔔 Уведомления: {'ВКЛ' if u.notifications_enabled else 'ВЫКЛ'}")
 
 @router.message(F.text == "🚫 Режим «Не беспокоить»")
-async def toggle_dnd(m: Message):
+async def start_dnd_setup(m: Message, state: FSMContext):
     async with async_session_maker() as session:
         u = (await session.execute(select(User).where(User.telegram_id == m.chat.id))).scalar()
-        u.do_not_disturb = not u.do_not_disturb
-        status = "ВКЛ (новые заказы не приходят)" if u.do_not_disturb else "ВЫКЛ"
+    
+    current = f"{u.dnd_start or '—'} - {u.dnd_end or '—'}"
+    await m.answer(
+        f"🌙 <b>Режим «Тишины» (DND)</b>\n"
+        f"Текущее нерабочее время: <code>{current}</code>\n\n"
+        f"Введите время <b>начала</b> тишины (например, 18:00) или напишите «выкл» для сброса:",
+        parse_mode="HTML"
+    )
+    await state.set_state(SettingsStates.entering_dnd_start)
+
+@router.message(SettingsStates.entering_dnd_start)
+async def process_dnd_start(m: Message, state: FSMContext):
+    if m.text.lower() == "выкл":
+        async with async_session_maker() as session:
+            await session.execute(update(User).where(User.telegram_id == m.chat.id).values(dnd_start=None, dnd_end=None))
+            await session.commit()
+        await m.answer("✅ Режим тишины полностью отключен.")
+        await state.clear()
+        return
+        
+    # Check format HH:MM
+    import re
+    if not re.match(r"^([01][0-9]|2[0-3]):[0-5][0-9]$", m.text):
+        await m.answer("⚠️ Ошибка формата. Введите время в формате ЧЧ:ММ (например, 18:00):")
+        return
+        
+    await state.update_data(dnd_start=m.text)
+    await m.answer(f"⏳ Начало тишины: {m.text}. Теперь введите время <b>окончания</b> (например, 08:00):")
+    await state.set_state(SettingsStates.entering_dnd_end)
+
+@router.message(SettingsStates.entering_dnd_end)
+async def process_dnd_end(m: Message, state: FSMContext):
+    # Check format HH:MM
+    import re
+    if not re.match(r"^([01][0-9]|2[0-3]):[0-5][0-9]$", m.text):
+        await m.answer("⚠️ Ошибка формата. Введите время в формате ЧЧ:ММ (например, 08:00):")
+        return
+        
+    data = await state.get_data()
+    start = data['dnd_start']
+    end = m.text
+    
+    async with async_session_maker() as session:
+        await session.execute(update(User).where(User.telegram_id == m.chat.id).values(dnd_start=start, dnd_end=end))
         await session.commit()
-    await m.answer(f"🌙 Режим «Не беспокоить»: {status}")
+        
+    await m.answer(f"✅ Режим тишины установлен: с <b>{start}</b> до <b>{end}</b>.", parse_mode="HTML")
+    await state.clear()
+    await back_to_master_main(m)
 
 @router.message(F.text == "🔑 Сменить статус видимости")
 async def toggle_visibility(m: Message):

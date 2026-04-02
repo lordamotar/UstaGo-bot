@@ -24,6 +24,8 @@ class ManagePhotoStates(StatesGroup):
 
 class SettingsStates(StatesGroup):
     choosing_districts = State()
+    entering_dnd_start = State()
+    entering_dnd_end = State()
 
 class OrderCreationStates(StatesGroup):
     requiring_phone = State()
@@ -40,3 +42,7 @@ class BidStates(StatesGroup):
 class ReviewStates(StatesGroup):
     rating = State()
     comment = State()
+
+class AdminStates(StatesGroup):
+    adding_category = State()
+    adding_district = State()

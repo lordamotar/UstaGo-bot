@@ -7,7 +7,9 @@ from database.models import User, MasterProfile, MasterStatus, UserRole, Transac
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from bot.keyboards.master import get_master_main_menu
-from bot.keyboards.admin import get_admin_main_menu, get_admin_back_inline
+from bot.keyboards.admin import get_admin_main_menu, get_admin_back_inline, get_list_management_keyboard
+from bot.states import AdminStates
+from aiogram.fsm.context import FSMContext
 
 router = Router()
 
@@ -201,3 +203,79 @@ async def admin_refill_points(message: Message):
         await message.bot.send_message(target_id, f"💰 Ваш баланс пополнен администратором на <b>{amount}</b> баллов!", parse_mode="HTML")
     except Exception:
         pass
+
+# --- CATEGORY MANAGEMENT ---
+@router.message(F.text == "🗂️ Категории")
+async def admin_manage_categories(message: Message):
+    if message.from_user.id not in config.ADMIN_IDS: return
+    async with async_session_maker() as session:
+        cats = (await session.execute(select(Category))).scalars().all()
+    await message.answer("🗂️ <b>Управление категориями</b>\nНажмите Trash для удаления или кнопку ниже для добавления:", parse_mode="HTML", reply_markup=get_list_management_keyboard(cats, "cat"))
+
+@router.callback_query(F.data == "cat_add")
+async def admin_add_cat_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.adding_category)
+    await callback.message.answer("⌨️ Введите название новой категории:")
+    await callback.answer()
+
+@router.message(AdminStates.adding_category)
+async def admin_add_cat_finish(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        session.add(Category(name=message.text))
+        await session.commit()
+    await state.clear()
+    await message.answer(f"✅ Категория «{message.text}» успешно добавлена!")
+    await admin_manage_categories(message)
+
+@router.callback_query(F.data.startswith("cat_del:"))
+async def admin_del_cat(callback: CallbackQuery):
+    cat_id = int(callback.data.split(":")[1])
+    async with async_session_maker() as session:
+        # Check if used
+        used = (await session.execute(select(func.count(Order.id)).where(Order.category_id == cat_id))).scalar()
+        if used:
+            await callback.answer("❌ Нельзя удалить: есть заказы в этой категории!", show_alert=True)
+            return
+        cat = await session.get(Category, cat_id)
+        await session.delete(cat)
+        await session.commit()
+    await callback.answer("✅ Категория удалена.")
+    await admin_manage_categories(callback.message)
+
+# --- DISTRICT MANAGEMENT ---
+@router.message(F.text == "📍 Районы")
+async def admin_manage_districts(message: Message):
+    if message.from_user.id not in config.ADMIN_IDS: return
+    async with async_session_maker() as session:
+        dists = (await session.execute(select(District))).scalars().all()
+    await message.answer("📍 <b>Управление районами</b>\nНажмите Trash для удаления или кнопку ниже для добавления:", parse_mode="HTML", reply_markup=get_list_management_keyboard(dists, "dist"))
+
+@router.callback_query(F.data == "dist_add")
+async def admin_add_dist_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.adding_district)
+    await callback.message.answer("⌨️ Введите название нового района:")
+    await callback.answer()
+
+@router.message(AdminStates.adding_district)
+async def admin_add_dist_finish(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        session.add(District(name=message.text))
+        await session.commit()
+    await state.clear()
+    await message.answer(f"✅ Район «{message.text}» успешно добавлен!")
+    await admin_manage_districts(message)
+
+@router.callback_query(F.data.startswith("dist_del:"))
+async def admin_del_dist(callback: CallbackQuery):
+    dist_id = int(callback.data.split(":")[1])
+    async with async_session_maker() as session:
+        # Check if used
+        used = (await session.execute(select(func.count(Order.id)).where(Order.district_id == dist_id))).scalar()
+        if used:
+            await callback.answer("❌ Нельзя удалить: есть заказы в этом районе!", show_alert=True)
+            return
+        dist = await session.get(District, dist_id)
+        await session.delete(dist)
+        await session.commit()
+    await callback.answer("✅ Район удален.")
+    await admin_manage_districts(callback.message)

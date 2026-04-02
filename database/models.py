@@ -60,7 +60,8 @@ class User(Base):
     
     # Settings
     notifications_enabled: Mapped[bool] = mapped_column(default=True)
-    do_not_disturb: Mapped[bool] = mapped_column(default=False)
+    dnd_start: Mapped[Optional[str]] = mapped_column(String(5), nullable=True) # e.g. "18:00"
+    dnd_end: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)   # e.g. "08:00"
     visible_for_new_orders: Mapped[bool] = mapped_column(default=True)
     
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

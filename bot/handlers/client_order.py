@@ -164,29 +164,38 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         master_stmt = select(User).join(User.master_profile).join(MasterProfile.categories).where(
             User.role == UserRole.MASTER,
             User.notifications_enabled == True,
-            User.visible_for_new_orders == True,
-            User.do_not_disturb == False,
+            User.visible_for_new_orders == True, 
             Category.id == data['category_id']
         )
         
         # Add District filter
-        # A master should get notification if:
-        # 1. They have this district in their work areas
-        # 2. OR they have NO districts selected (works everywhere)
-        
         has_no_districts = ~exists().where(master_district_areas.c.master_profile_id == MasterProfile.id)
         works_in_district = exists().where(
             (master_district_areas.c.master_profile_id == MasterProfile.id) & 
             (master_district_areas.c.district_id == data['district_id'])
         )
-        
         master_stmt = master_stmt.where(or_(works_in_district, has_no_districts))
         
         res = await session.execute(master_stmt)
         masters_to_notify = res.scalars().all()
-        print(f"DEBUG: Found {len(masters_to_notify)} masters to notify for order {order_id}")
+        print(f"DEBUG: Found {len(masters_to_notify)} masters potentially for order {order_id}")
         
+        # 3. Filter by DND TIME for each master
+        from datetime import datetime
+        now_str = datetime.now().strftime("%H:%M")
+        
+        def is_in_dnd(now_s, start_s, end_s):
+            if not start_s or not end_s: return False
+            if start_s == end_s: return False
+            if start_s < end_s:
+                return start_s <= now_s < end_s
+            else: # Crosses midnight
+                return now_s >= start_s or now_s < end_s
+
         for master in masters_to_notify:
+            if is_in_dnd(now_str, master.dnd_start, master.dnd_end):
+                print(f"DEBUG: Skipping Master {master.telegram_id} due to Silence Time ({master.dnd_start}-{master.dnd_end})")
+                continue
             try:
                 # SKIP notifying the person who created the order if they are also a master
                 if master.telegram_id == callback.from_user.id:
