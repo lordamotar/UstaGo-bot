@@ -1,101 +1,177 @@
+import enum
+from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import BigInteger, Column, Integer, String, Text, ForeignKey, Enum, Boolean, Table
-from sqlalchemy.orm import declarative_base, Mapped, mapped_column, relationship
-from enum import Enum as PyEnum
+from sqlalchemy import BigInteger, String, ForeignKey, Enum as SqlEnum, DateTime, Integer, Float, Boolean, Table, Column, JSON, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from database.base import Base
 
-Base = declarative_base()
+class UserRole(enum.Enum):
+    CLIENT = "CLIENT"
+    MASTER = "MASTER"
+    ADMIN = "ADMIN"
 
-class UserRole(PyEnum):
-    CLIENT = "client"
-    MASTER = "master"
-    ADMIN = "admin"
+class MasterStatus(enum.Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
-class MasterStatus(PyEnum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
+class OrderStatus(enum.Enum):
+    NEW = "NEW"
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
 
-# Many-to-Many association table for Masters and Categories
-master_categories = Table(
-    'master_category_subscriptions',
+class TransactionType(enum.Enum):
+    REFERRAL_BONUS = "REFERRAL_BONUS"
+    CONTACT_FEE = "CONTACT_FEE"
+    RATING_BONUS = "RATING_BONUS"
+    WITHDRAWAL = "WITHDRAWAL"
+    ADMIN_ADJUSTMENT = "ADMIN_ADJUSTMENT"
+
+# Association table for Master - Category subscriptions
+master_category_subscriptions = Table(
+    "master_category_subscriptions",
     Base.metadata,
-    Column('master_id', Integer, ForeignKey('master_profiles.id'), primary_key=True),
-    Column('category_id', Integer, ForeignKey('categories.id'), primary_key=True)
+    Column("master_profile_id", ForeignKey("master_profiles.id"), primary_key=True),
+    Column("category_id", ForeignKey("categories.id"), primary_key=True),
+)
+
+# Association table for Master - District areas
+master_district_areas = Table(
+    "master_district_areas",
+    Base.metadata,
+    Column("master_profile_id", ForeignKey("master_profiles.id"), primary_key=True),
+    Column("district_id", ForeignKey("districts.id"), primary_key=True),
 )
 
 class User(Base):
-    """
-    Core User table representing a Telegram user.
-    """
-    __tablename__ = 'users'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
-    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    username: Mapped[Optional[str]] = mapped_column(String(255))
-    phone_number: Mapped[Optional[str]] = mapped_column(String(20))
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.CLIENT)
-    points: Mapped[int] = mapped_column(Integer, default=100)  # Initial bonus
+    __tablename__ = "users"
     
-    # Relationships
-    master_profile: Mapped["MasterProfile"] = relationship("MasterProfile", back_populates="user", uselist=False)
-    orders_placed: Mapped[List["Order"]] = relationship("Order", back_populates="client")
-
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    full_name: Mapped[str] = mapped_column(String(255))
+    username: Mapped[Optional[str]] = mapped_column(String(255))
+    phone_number: Mapped[Optional[str]] = mapped_column(String(50))
+    role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), default=UserRole.CLIENT)
+    
+    # Referral system
+    referred_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    points: Mapped[int] = mapped_column(default=100)
+    
+    # Settings
+    notifications_enabled: Mapped[bool] = mapped_column(default=True)
+    do_not_disturb: Mapped[bool] = mapped_column(default=False)
+    visible_for_new_orders: Mapped[bool] = mapped_column(default=True)
+    
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    
+    master_profile: Mapped["MasterProfile"] = relationship(back_populates="user", uselist=False)
+    transactions: Mapped[List["Transaction"]] = relationship(back_populates="user")
+    orders_created: Mapped[List["Order"]] = relationship(back_populates="client")
 
 class Category(Base):
-    """
-    Two-tier category taxonomy (e.g. "Мастер на час" -> "Электрик")
-    """
-    __tablename__ = 'categories'
+    __tablename__ = "categories"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    
+    masters: Mapped[List["MasterProfile"]] = relationship(
+        secondary=master_category_subscriptions, back_populates="categories"
+    )
+    orders: Mapped[List["Order"]] = relationship(back_populates="category")
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    parent_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('categories.id'))
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # Relationships
-    parent = relationship("Category", remote_side=[id], backref="subcategories")
-    masters: Mapped[List["MasterProfile"]] = relationship("MasterProfile", secondary=master_categories, back_populates="categories")
-
+class District(Base):
+    __tablename__ = "districts"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    
+    masters: Mapped[List["MasterProfile"]] = relationship(
+        secondary=master_district_areas, back_populates="districts"
+    )
+    orders: Mapped[List["Order"]] = relationship(back_populates="district")
 
 class MasterProfile(Base):
-    """
-    Profile information specifically for Masters.
-    """
-    __tablename__ = 'master_profiles'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.id'), unique=True, nullable=False)
-    status: Mapped[MasterStatus] = mapped_column(Enum(MasterStatus), default=MasterStatus.PENDING)
+    __tablename__ = "master_profiles"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True)
+    status: Mapped[MasterStatus] = mapped_column(SqlEnum(MasterStatus), default=MasterStatus.PENDING)
     description: Mapped[Optional[str]] = mapped_column(Text)
-    experience: Mapped[Optional[str]] = mapped_column(String(100))
-    rating: Mapped[float] = mapped_column(default=0.0)
-
-    # Relationships
-    user: Mapped["User"] = relationship("User", back_populates="master_profile")
-    categories: Mapped[List["Category"]] = relationship("Category", secondary=master_categories, back_populates="masters")
-
-
-class OrderStatus(PyEnum):
-    OPEN = "open"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-
+    experience: Mapped[Optional[str]] = mapped_column(String(255))
+    rating: Mapped[float] = mapped_column(Float, default=0.0)
+    
+    # Portfolio
+    work_photos: Mapped[Optional[list]] = mapped_column(JSON, default=list)
+    
+    user: Mapped["User"] = relationship(back_populates="master_profile")
+    categories: Mapped[List["Category"]] = relationship(
+        secondary=master_category_subscriptions, back_populates="masters"
+    )
+    districts: Mapped[List["District"]] = relationship(
+        secondary=master_district_areas, back_populates="masters"
+    )
+    bids: Mapped[List["Bid"]] = relationship(back_populates="master")
 
 class Order(Base):
-    """
-    Represents a client's job request dispatched to Masters.
-    """
-    __tablename__ = 'orders'
+    __tablename__ = "orders"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"))
+    district_id: Mapped[Optional[int]] = mapped_column(ForeignKey("districts.id"))
+    
+    description: Mapped[str] = mapped_column(Text)
+    budget: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[OrderStatus] = mapped_column(SqlEnum(OrderStatus), default=OrderStatus.NEW)
+    photo_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
+    
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    
+    client: Mapped["User"] = relationship(back_populates="orders_created")
+    category: Mapped["Category"] = relationship(back_populates="orders")
+    district: Mapped[Optional["District"]] = relationship(back_populates="orders")
+    bids: Mapped[List["Bid"]] = relationship(back_populates="order")
+    review: Mapped[Optional["Review"]] = relationship(back_populates="order", uselist=False)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    client_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.id'), nullable=False)
-    category_id: Mapped[int] = mapped_column(Integer, ForeignKey('categories.id'), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    price: Mapped[Optional[str]] = mapped_column(String(50))  # Free-form or numeric
-    status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.OPEN)
+class Bid(Base):
+    __tablename__ = "bids"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
+    master_id: Mapped[int] = mapped_column(ForeignKey("master_profiles.id"))
+    suggested_price: Mapped[Optional[int]] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+    
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    
+    order: Mapped["Order"] = relationship(back_populates="bids")
+    master: Mapped["MasterProfile"] = relationship(back_populates="bids")
 
-    # Relationships
-    client: Mapped["User"] = relationship("User", back_populates="orders_placed")
-    category: Mapped["Category"] = relationship("Category")
+class Review(Base):
+    __tablename__ = "reviews"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
+    from_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    to_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    
+    rating: Mapped[int] = mapped_column(Integer)
+    comment: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    
+    order: Mapped["Order"] = relationship(back_populates="review")
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    amount: Mapped[int] = mapped_column(Integer)
+    type: Mapped[TransactionType] = mapped_column(SqlEnum(TransactionType))
+    description: Mapped[Optional[str]] = mapped_column(String(255))
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"))
+    
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    
+    user: Mapped["User"] = relationship(back_populates="transactions")

@@ -13,10 +13,41 @@ router = Router()
 from bot.keyboards.registration import get_role_keyboard
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext, command: CommandStart = None):
     """Handles the /start command."""
-    await state.clear() # Очищаем состояние стейт-машины, если пользователь его прервал
+    await state.clear()
     
+    # Referral tracking
+    ref_id = None
+    args = command.args if command else None
+    if args and args.startswith("ref_"):
+        try:
+            ref_id = int(args.split("_")[1])
+        except (IndexError, ValueError):
+            pass
+
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        if not user:
+            # Create new user with referral if provided
+            inviter = None
+            if ref_id and ref_id != message.from_user.id:
+                inv_stmt = select(User).where(User.telegram_id == ref_id)
+                inv_res = await session.execute(inv_stmt)
+                inviter = inv_res.scalar_one_or_none()
+            
+            user = User(
+                telegram_id=message.from_user.id,
+                full_name=message.from_user.full_name,
+                username=message.from_user.username,
+                referred_by=inviter.id if inviter else None
+            )
+            session.add(user)
+            await session.commit()
+
     text = (
         "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"
         "Мы найдём проверенных мастеров в вашем районе.\n"
@@ -31,9 +62,26 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=get_role_keyboard())
 
 @router.message(F.text == "👤 Я клиент")
-async def handle_client_role(message: Message):
+async def handle_client_role(message: Message, state: FSMContext):
+    """Handles client role choosing."""
+    from bot.keyboards.client import get_client_main_menu
+    await state.clear()
+    
+    async with async_session_maker() as session:
+        # Check if already a master
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        if user:
+            user.role = UserRole.CLIENT
+            await session.commit()
+    
     await message.answer(
-        "Выбран профиль: Клиент. \nВ следующих обновлениях здесь появится кнопка создания заявки."
+        "🌆 *Добро пожаловать в кабинет клиента!*\n\n"
+        "Здесь вы можете создать заявку и получить отклики от лучших мастеров города Семей.",
+        parse_mode="Markdown",
+        reply_markup=get_client_main_menu()
     )
 
 from bot.keyboards.master import get_master_main_menu

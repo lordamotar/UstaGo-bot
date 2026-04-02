@@ -29,6 +29,10 @@ async def admin_menu(message: Message):
     else:
         await message.answer(text)
 
+from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType
+
+router = Router()
+
 @router.callback_query(F.data.startswith("admin_approve:"))
 async def approve_master(callback: CallbackQuery):
     if callback.from_user.id not in config.ADMIN_IDS:
@@ -38,14 +42,56 @@ async def approve_master(callback: CallbackQuery):
     master_id = int(callback.data.split(":")[1])
     
     async with async_session_maker() as session:
-        # Update Master Status
-        q = update(MasterProfile).where(MasterProfile.id == master_id).values(status=MasterStatus.APPROVED)
-        await session.execute(q)
-        
-        # Get Master's Telegram ID to notify them
-        stmt = select(User.telegram_id).join(MasterProfile).where(MasterProfile.id == master_id)
+        # Get Master's User object to check referral
+        stmt = select(User).join(MasterProfile).where(MasterProfile.id == master_id)
         res = await session.execute(stmt)
-        tg_id = res.scalar()
+        user = res.scalar_one_or_none()
+        
+        if not user:
+            await callback.answer("User not found.")
+            return
+
+        # Update Master Status
+        profile_stmt = select(MasterProfile).where(MasterProfile.id == master_id)
+        profile_res = await session.execute(profile_stmt)
+        profile = profile_res.scalar_one_or_none()
+        profile.status = MasterStatus.APPROVED
+        
+        # Referral Bonus Logic
+        if user.referred_by:
+            # Inviter Bonus
+            inviter_stmt = select(User).where(User.id == user.referred_by)
+            inviter_res = await session.execute(inviter_stmt)
+            inviter = inviter_res.scalar_one_or_none()
+            if inviter:
+                bonus_amount = 1000
+                inviter.points += bonus_amount
+                session.add(Transaction(
+                    user_id=inviter.id,
+                    amount=bonus_amount,
+                    type=TransactionType.REFERRAL_BONUS,
+                    description=f"Бонус за приглашенного мастера {user.full_name}"
+                ))
+                # Master Bonus
+                user.points += bonus_amount
+                session.add(Transaction(
+                    user_id=user.id,
+                    amount=bonus_amount,
+                    type=TransactionType.REFERRAL_BONUS,
+                    description="Бонус за регистрацию по реферальной ссылке"
+                ))
+                
+                # Notify Inviter
+                try:
+                    await callback.bot.send_message(
+                        inviter.telegram_id,
+                        f"🎁 Ваш приглашенный мастер {user.full_name} прошел модерацию!\n"
+                        f"Вам начислено {bonus_amount} баллов!"
+                    )
+                except Exception:
+                    pass
+        
+        tg_id = user.telegram_id
         await session.commit()
         
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")

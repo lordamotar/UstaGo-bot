@@ -8,16 +8,6 @@ from bot.core.config import config
 from database.engine import async_session_maker
 from database.models import User, MasterProfile, MasterStatus, Category, UserRole
 
-# Dummy list of subcategories reflecting the PRD
-MOCK_CATEGORIES = [
-    {"id": 1, "name": "Электрик"},
-    {"id": 2, "name": "Сантехник"},
-    {"id": 3, "name": "Сборка мебели"},
-    {"id": 4, "name": "Вскрытие замков"},
-    {"id": 5, "name": "Уборка квартир"},
-    {"id": 6, "name": "Мойка окон"}
-]
-
 router = Router()
 
 from bot.keyboards.registration import (
@@ -26,15 +16,19 @@ from bot.keyboards.registration import (
     get_phone_sharing_keyboard
 )
 
-
 @router.message(RegistrationStates.entering_name)
 async def process_name(message: Message, state: FSMContext):
     """1. Saves name and asks for categories."""
     await state.update_data(full_name=message.text)
     await state.set_state(RegistrationStates.selecting_categories)
-    await state.update_data(selected_categories=[])
     
-    keyboard = build_categories_keyboard(set(), MOCK_CATEGORIES)
+    async with async_session_maker() as session:
+        res = await session.execute(select(Category))
+        categories = res.scalars().all()
+        cats_list = [{"id": c.id, "name": c.name} for c in categories]
+        await state.update_data(all_categories=cats_list, selected_categories=[])
+    
+    keyboard = build_categories_keyboard(set(), cats_list)
     await message.answer(
         f"Приятно познакомиться, {message.text}!\n\n"
         "2. Выберите категории услуг, которые вы предоставляете (можно несколько):",
@@ -47,6 +41,7 @@ async def toggle_category(callback: CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split(":")[1])
     data = await state.get_data()
     selected_categories = set(data.get("selected_categories", []))
+    cats_list = data.get("all_categories", [])
     
     if cat_id in selected_categories:
         selected_categories.remove(cat_id)
@@ -54,7 +49,7 @@ async def toggle_category(callback: CallbackQuery, state: FSMContext):
         selected_categories.add(cat_id)
         
     await state.update_data(selected_categories=list(selected_categories))
-    keyboard = build_categories_keyboard(selected_categories, MOCK_CATEGORIES)
+    keyboard = build_categories_keyboard(selected_categories, cats_list)
     
     try:
         await callback.message.edit_reply_markup(reply_markup=keyboard)

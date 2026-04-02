@@ -1,9 +1,14 @@
 from aiogram import Router, F, types
-from aiogram.types import Message
-from sqlalchemy import select
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy import select, func, update
+from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
 from database.models import User, MasterProfile, MasterStatus, Category
-from bot.keyboards.master import get_master_main_menu, get_profile_menu, get_orders_menu, get_balance_menu, get_settings_menu
+from bot.keyboards.master import (
+    get_master_main_menu, get_profile_menu, get_orders_menu, 
+    get_balance_menu, get_settings_menu, build_districts_keyboard
+)
+from bot.states import EditProfileStates, ManagePhotoStates, SettingsStates
 
 router = Router()
 
@@ -99,18 +104,167 @@ async def show_accreditation(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
-@router.message(F.text == "✏️ Редактировать")
-async def edit_profile_start(message: Message):
-    await message.answer("🛠️ Функция редактирования профиля будет доступна в следующем обновлении.")
+from bot.states import EditProfileStates, ManagePhotoStates
+from bot.keyboards.master import get_edit_profile_inline_keyboard, get_photo_management_keyboard
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery
 
+# --- MANAGE PROFILE ---
+@router.message(F.text == "✏️ Редактировать")
+async def edit_profile_menu(message: Message, state: FSMContext):
+    await state.set_state(EditProfileStates.choosing_field)
+    await message.answer(
+        "✏️ *Редактирование анкеты*\n\nВыберите, что хотите изменить:",
+        parse_mode="Markdown",
+        reply_markup=get_edit_profile_inline_keyboard()
+    )
+
+@router.callback_query(EditProfileStates.choosing_field, F.data == "edit_name")
+async def edit_name_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(EditProfileStates.editing_name)
+    await callback.message.edit_text("Введите новое имя (как оно будет отображаться клиентам):")
+    await callback.answer()
+
+@router.message(EditProfileStates.editing_name)
+async def process_new_name(message: Message, state: FSMContext):
+    new_name = message.text
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        if user:
+            user.full_name = new_name
+            await session.commit()
+    
+    await state.set_state(EditProfileStates.choosing_field)
+    await message.answer(f"✅ Имя успешно изменено на *{new_name}*", parse_mode="Markdown", reply_markup=get_edit_profile_inline_keyboard())
+
+@router.callback_query(EditProfileStates.choosing_field, F.data == "edit_description")
+async def edit_desc_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(EditProfileStates.editing_description)
+    await callback.message.edit_text("Введите новое описание (до 500 символов):")
+    await callback.answer()
+
+@router.message(EditProfileStates.editing_description)
+async def process_new_desc(message: Message, state: FSMContext):
+    new_desc = message.text
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id).options(selectinload(User.master_profile))
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        if user and user.master_profile:
+            user.master_profile.description = new_desc
+            await session.commit()
+    
+    await state.set_state(EditProfileStates.choosing_field)
+    await message.answer("✅ Описание сохранено.", reply_markup=get_edit_profile_inline_keyboard())
+
+@router.callback_query(EditProfileStates.choosing_field, F.data == "profile_back")
+@router.callback_query(ManagePhotoStates.main, F.data == "profile_back")
+async def back_to_profile(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await show_profile(callback.message)
+    await callback.answer()
+
+# --- MANAGE PHOTOS ---
 @router.message(F.text == "📸 Фото")
-async def edit_photos_start(message: Message):
-    await message.answer("📸 Функция обновления портфолио будет доступна в следующем обновлении.")
+async def manage_photos(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        stmt = select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+    count = len(user.master_profile.work_photos) if user and user.master_profile and user.master_profile.work_photos else 0
+    await state.set_state(ManagePhotoStates.main)
+    await message.answer(
+        f"📸 *Ваши фото работ*\n\nУ вас {count} фото.",
+        parse_mode="Markdown",
+        reply_markup=get_photo_management_keyboard(count)
+    )
+
+@router.callback_query(ManagePhotoStates.main, F.data == "add_photos")
+async def add_photos_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ManagePhotoStates.adding_photos)
+    await callback.message.edit_text(
+        "📸 *Добавление фото*\n\nОтправьте мне одно или несколько фото. Когда закончите, нажмите кнопку «Готово».",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Готово", callback_data="photo_done")]])
+    )
+    await callback.answer()
+
+@router.message(ManagePhotoStates.adding_photos, F.photo)
+async def process_new_photo(message: Message, state: FSMContext):
+    file_id = message.photo[-1].file_id
+    async with async_session_maker() as session:
+        stmt = select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        if user and user.master_profile:
+            current_photos = list(user.master_profile.work_photos or [])
+            current_photos.append(file_id)
+            user.master_profile.work_photos = current_photos
+            await session.commit()
+    
+    await message.answer(f"✅ Фото добавлено. Вы можете отправить еще или нажать «Готово» выше.")
+
+@router.callback_query(ManagePhotoStates.adding_photos, F.data == "photo_done")
+async def finish_uploading(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await manage_photos(callback.message, state)
+    await callback.answer()
+
+@router.callback_query(ManagePhotoStates.main, F.data == "delete_photos")
+async def delete_photos_start(callback: CallbackQuery, state: FSMContext):
+    async with async_session_maker() as session:
+        stmt = select(User).options(selectinload(User.master_profile)).where(User.telegram_id == callback.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+    
+    photos = user.master_profile.work_photos if user and user.master_profile else []
+    if not photos:
+        await callback.answer("У вас нет фото для удаления.", show_alert=True)
+        return
+
+    await state.set_state(ManagePhotoStates.deleting_photos)
+    # Just show the first one or simple logic for now
+    await callback.message.edit_text("🗑️ Введите номер фото для удаления (1, 2, 3...) или 'отмена'.")
+    await callback.answer()
 
 # --- ORDERS SUBMENU ---
 @router.message(F.text == "🔄 Доступные заказы")
 async def show_available_orders(message: Message):
-    await message.answer("🔄 Список новых заказов пуст. Мы сообщим вам, когда появится работа в ваших категориях!")
+    async with async_session_maker() as session:
+        from database.models import Order, OrderStatus
+        # Get Master's categories
+        stmt = select(User).options(selectinload(User.master_profile).selectinload(MasterProfile.categories)).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        if not user or not user.master_profile:
+            return
+
+        cat_ids = [c.id for c in user.master_profile.categories]
+        
+        # Fetch active orders in these categories
+        order_stmt = select(Order).options(selectinload(Order.category)).where(
+            Order.category_id.in_(cat_ids),
+            Order.status == OrderStatus.NEW
+        ).order_by(Order.created_at.desc())
+        
+        o_res = await session.execute(order_stmt)
+        orders = o_res.scalars().all()
+        
+    if not orders:
+        await message.answer("🔄 В данный момент новых заказов по вашим категориям нет. Мы уведомим вас, когда они появятся!")
+        return
+        
+    text = f"🔄 *Доступные заказы ({len(orders)}):*\n\n"
+    for o in orders:
+        text += f"📦 *{o.category.name}*\n💰 Бюджет: {o.budget or 'Договорная'}\n📝 {o.description[:100]}...\n/order_{o.id}\n\n"
+        
+    await message.answer(text, parse_mode="Markdown")
 
 @router.message(F.text == "⏳ Мои активные заказы")
 async def show_active_orders(message: Message):
@@ -121,19 +275,135 @@ async def show_completed_orders(message: Message):
     await message.answer("✅ В вашей истории пока нет завершенных заказов.")
 
 # --- BALANCE SUBMENU ---
-@router.message(F.text == "💸 Вывести баллы")
-@router.message(F.text == "💸 Пополнить баллы")
-async def balance_placeholder(message: Message):
-    await message.answer("🚧 Финансовые операции пока производятся через администратора. Функция оплаты в боте скоро появится.")
+# @router.message(F.text == "💸 Вывести баллы")
+# @router.message(F.text == "💸 Пополнить баллы")
+# async def balance_placeholder(message: Message):
+#     await message.answer("🚧 Финансовые операции пока производятся через администратора. Функция оплаты в боте скоро появится.")
 
 @router.message(F.text == "📜 История операций")
 async def show_balance_history(message: Message):
-    await message.answer("📜 История операций пока пуста.")
+    async with async_session_maker() as session:
+        from database.models import Transaction
+        stmt = select(Transaction).join(User).where(User.telegram_id == message.from_user.id).order_by(Transaction.created_at.desc()).limit(10)
+        res = await session.execute(stmt)
+        txs = res.scalars().all()
+        
+    if not txs:
+        await message.answer("📜 Ваша история операций пока пуста.")
+        return
+        
+    text = "📜 *История операций:*\n\n"
+    for tx in txs:
+        sign = "+" if tx.amount > 0 else "-"
+        date = tx.created_at.strftime("%d.%m %H:%M")
+        text += f"📅 {date} | *{sign}{abs(tx.amount)}* — {tx.description}\n"
+    
+    await message.answer(text, parse_mode="Markdown")
 
 # --- SETTINGS SUBMENU ---
-@router.message(F.text.in_({"🔔 Уведомления", "📍 Районы работы", "🚫 Режим «Не беспокоить»", "🔑 Сменить статус видимости"}))
-async def settings_placeholders(message: Message):
-    await message.answer(f"⚙️ Раздел «{message.text}» находится в разработке.")
+@router.message(F.text == "🔔 Уведомления")
+async def toggle_notifications(message: Message):
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        current = user.notifications_enabled
+        user.notifications_enabled = not current
+        await session.commit()
+        new_state = "ВКЛЮЧЕНЫ" if not current else "ВЫКЛЮЧЕНЫ"
+        
+    await message.answer(f"🔔 Уведомления о новых заказах: *{new_state}*", parse_mode="Markdown")
+
+@router.message(F.text == "🚫 Режим «Не беспокоить»")
+async def toggle_dnd(message: Message):
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        current = user.do_not_disturb
+        user.do_not_disturb = not current
+        await session.commit()
+        new_state = "АКТИВИРОВАН" if not current else "ВЫКЛЮЧЕН"
+        
+    await message.answer(f"🚫 Режим «Не беспокоить»: *{new_state}*", parse_mode="Markdown")
+
+@router.message(F.text == "🔑 Сменить статус видимости")
+async def toggle_visibility(message: Message):
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        current = user.visible_for_new_orders
+        user.visible_for_new_orders = not current
+        await session.commit()
+        new_state = "ВИДИМ" if not current else "СКРЫТ"
+        
+    await message.answer(f"🔑 Ваш профиль для новых заказов: *{new_state}*", parse_mode="Markdown")
+
+@router.message(F.text == "📍 Районы работы")
+async def manage_districts(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        from database.models import District
+        stmt = select(User).options(selectinload(User.master_profile).selectinload(MasterProfile.districts)).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        dist_res = await session.execute(select(District))
+        all_districts = dist_res.scalars().all()
+        all_dist_names = [d.name for d in all_districts]
+        selected_names = [d.name for d in user.master_profile.districts]
+        
+    await state.set_state(SettingsStates.choosing_districts)
+    await state.update_data(selected_districts=selected_names, all_dist_names=all_dist_names)
+    
+    await message.answer(
+        "📍 *Выбор районов работы*\n\nОтметьте районы, в которых вы готовы принимать заказы:",
+        parse_mode="Markdown",
+        reply_markup=build_districts_keyboard(selected_names, all_dist_names)
+    )
+
+@router.callback_query(SettingsStates.choosing_districts, F.data.startswith("dist_toggle:"))
+async def toggle_district(callback: CallbackQuery, state: FSMContext):
+    dist_name = callback.data.split(":")[1]
+    data = await state.get_data()
+    selected = set(data.get("selected_districts", []))
+    all_names = data.get("all_dist_names", [])
+    
+    if dist_name in selected:
+        selected.remove(dist_name)
+    else:
+        selected.add(dist_name)
+        
+    await state.update_data(selected_districts=list(selected))
+    await callback.message.edit_reply_markup(reply_markup=build_districts_keyboard(list(selected), all_names))
+    await callback.answer()
+
+@router.callback_query(SettingsStates.choosing_districts, F.data == "dist_save")
+async def save_districts(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected_names = data.get("selected_districts", [])
+    
+    async with async_session_maker() as session:
+        from database.models import District
+        stmt = select(User).options(selectinload(User.master_profile).selectinload(MasterProfile.districts)).where(User.telegram_id == callback.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        # Sync districts
+        dist_stmt = select(District).where(District.name.in_(selected_names))
+        dist_res = await session.execute(dist_stmt)
+        new_districts = dist_res.scalars().all()
+        
+        user.master_profile.districts = list(new_districts)
+        await session.commit()
+    
+    await state.clear()
+    # Simple message after save
+    await callback.message.edit_text("✅ Районы успешно сохранены.")
+    await callback.answer()
 
 @router.message(F.text == "🆘 Помощь")
 async def show_help(message: Message):
@@ -148,14 +418,34 @@ async def show_help(message: Message):
 
 @router.message(F.text == "🔗 Рефералы")
 async def show_referrals(message: Message):
-    # Referral link based on bot username
+    async with async_session_maker() as session:
+        from database.models import Transaction, TransactionType
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        res = await session.execute(stmt)
+        user = res.scalar_one_or_none()
+        
+        # Count referred users who are approved masters
+        ref_stmt = select(User).where(User.referred_by == user.id)
+        ref_res = await session.execute(ref_stmt)
+        refs = ref_res.scalars().all()
+        
+        # Total earned from referrals
+        bonus_stmt = select(func.sum(Transaction.amount)).where(
+            Transaction.user_id == user.id,
+            Transaction.type == TransactionType.REFERRAL_BONUS
+        )
+        bonus_res = await session.execute(bonus_stmt)
+        total_earned = bonus_res.scalar() or 0
+
     bot_info = await message.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
     
     text = (
-        "🔗 *Реферальная программа*\n\n"
-        f"Ваша ссылка: `{ref_link}`\n\n"
-        "За каждого мастера, который пройдет модерацию по вашей ссылке, вы получите 50 баллов!"
+        "🔗 *Реферальная система*\n\n"
+        "Приглашайте коллег и получайте по *1000 баллов* за каждого мастера, который пройдет модерацию!\n\n"
+        f"👥 Принято приглашений: {len(refs)}\n"
+        f"💰 Заработано: {total_earned} баллов\n\n"
+        f"📍 Ваша ссылка:\n`{ref_link}`"
     )
     await message.answer(text, parse_mode="Markdown")
 

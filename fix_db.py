@@ -4,19 +4,25 @@ from database.engine import engine
 
 async def fix():
     async with engine.begin() as conn:
-        print("Очистка конфликтующих ENUM типов...")
-        await conn.execute(text("DROP TYPE IF EXISTS userrole CASCADE;"))
-        await conn.execute(text("DROP TYPE IF EXISTS masterstatus CASCADE;"))
-        await conn.execute(text("DROP TYPE IF EXISTS orderstatus CASCADE;"))
-        await conn.execute(text("DROP TABLE IF EXISTS alembic_version CASCADE;"))
-        await conn.execute(text("DROP TABLE IF EXISTS users CASCADE;"))
-        await conn.execute(text("DROP TABLE IF EXISTS categories CASCADE;"))
-        await conn.execute(text("DROP TABLE IF EXISTS master_profiles CASCADE;"))
-        await conn.execute(text("DROP TABLE IF EXISTS master_category_subscriptions CASCADE;"))
-        await conn.execute(text("DROP TABLE IF EXISTS orders CASCADE;"))
+        print("Очистка базы данных...")
+        # Drop tables with CASCADE
+        tables = [
+            "transactions", "reviews", "bids", "orders", 
+            "master_district_areas", "master_category_subscriptions",
+            "districts", "master_profiles", "categories", "users", "alembic_version"
+        ]
+        for table in tables:
+            print(f"Dropping table {table}...")
+            await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE;"))
+            
+        # Drop types
+        types = ["userrole", "masterstatus", "orderstatus", "transactiontype"]
+        for t in types:
+            print(f"Dropping type {t}...")
+            await conn.execute(text(f"DROP TYPE IF EXISTS {t} CASCADE;"))
         
     await engine.dispose()
-    print("Успешно очищено. Теперь можно повторить upgrade head.")
+    print("Успешно очищено. Теперь можно повторить alembic upgrade head.")
 
 if __name__ == "__main__":
     asyncio.run(fix())

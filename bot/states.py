@@ -11,4 +11,23 @@ class RegistrationStates(StatesGroup):
     entering_experience = State()      # 4. Стаж
     uploading_photos = State()         # 5. Фото работ
     sharing_phone = State()            # 6. Поделиться номером
-    pending_approval = State()         # Sent to admins for approval
+class EditProfileStates(StatesGroup):
+    choosing_field = State()
+    editing_name = State()
+    selecting_categories = State()
+    editing_description = State()
+
+class ManagePhotoStates(StatesGroup):
+    main = State()
+    adding_photos = State()
+    deleting_photos = State()
+
+class SettingsStates(StatesGroup):
+    choosing_districts = State()
+
+class OrderCreationStates(StatesGroup):
+    selecting_category = State()
+    entering_description = State()
+    entering_budget = State()
+    selecting_district = State()
+    confirming = State()
