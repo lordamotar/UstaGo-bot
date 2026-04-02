@@ -60,19 +60,23 @@ async def show_my_orders(message: Message):
         
     if orders_active:
         text = "⚡️ <b>Активные заказы (в работе):</b>\n"
-        keyboard = []
         for o in orders_active:
             text += f"\n📦 <b>{o.category.name}</b>\n📝 {o.description[:50]}...\n"
-            keyboard.append([InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"client_complete_order:{o.id}")])
-        await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"client_complete_order:{o.id}")],
+                [InlineKeyboardButton(text=f"❌ Отменить заказ №{o.id}", callback_data=f"client_cancel_order:{o.id}")]
+            ])
+            await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
     if orders_new:
         text = "🆕 <b>Новые заявки (сбор откликов):</b>\n"
-        keyboard = []
         for o in orders_new:
             text += f"\n📦 <b>{o.category.name}</b>\n📝 {o.description[:50]}...\n"
-            keyboard.append([InlineKeyboardButton(text=f"🔍 Детали заявки №{o.id}", callback_data=f"client_view_order:{o.id}")])
-        await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"🔍 Детали заявки №{o.id}", callback_data=f"client_view_order:{o.id}")],
+                [InlineKeyboardButton(text=f"❌ Отменить заявку №{o.id}", callback_data=f"client_cancel_order:{o.id}")]
+            ])
+            await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("client_view_order:"))
 async def client_view_order_callback(callback: CallbackQuery):
@@ -206,8 +210,9 @@ async def process_accept_bid(message: Message, bid_id: int):
             return
 
         order = bid.order
-        if order.status == OrderStatus.ACTIVE:
-            await message.answer("⚠️ Этот заказ уже в работе.")
+        if order.status != OrderStatus.NEW:
+            status_text = "в работе" if order.status == OrderStatus.ACTIVE else "уже завершен" if order.status == OrderStatus.COMPLETED else "отменен"
+            await message.answer(f"⚠️ Вы не можете принять мастера: заказ уже {status_text}.")
             return
 
         master_user = bid.master.user
@@ -296,6 +301,50 @@ async def complete_order_handler(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Выберите оценку:", reply_markup=kb)
         
     await callback.answer()
+
+@router.callback_query(F.data.startswith("client_cancel_order:"))
+async def client_cancel_order_callback(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
+    
+    async with async_session_maker() as session:
+        # Load order with relations
+        stmt = select(Order).options(
+            selectinload(Order.bids).joinedload(Bid.master).joinedload(MasterProfile.user)
+        ).where(Order.id == order_id)
+        res = await session.execute(stmt)
+        order = res.scalar_one_or_none()
+        
+        if not order:
+            await callback.answer("❌ Заказ не найден.")
+            return
+            
+        if order.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+            await callback.answer("⚠️ Вы не можете отменить этот заказ.")
+            return
+            
+        old_status = order.status
+        order.status = OrderStatus.CANCELLED
+        
+        # If order was active, notify the accepted master
+        accepted_bid = next((b for b in order.bids if b.status == "accepted"), None)
+        master_user = accepted_bid.master.user if accepted_bid else None
+        
+        await session.commit()
+        
+    await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
+    
+    # Notify Master if ACTIVE
+    if old_status == OrderStatus.ACTIVE and master_user:
+        try:
+            await callback.bot.send_message(
+                master_user.telegram_id,
+                f"⚠️ <b>Заказ №{order_id} отменен клиентом.</b>\n"
+                f"Вы по-прежнему можете откликаться на другие заказы в списке!",
+                parse_mode="HTML"
+            )
+        except Exception: pass
+        
+    await callback.answer("Заказ отменен.")
 
 @router.callback_query(F.data.startswith("start_review:"))
 async def start_review_callback(callback: CallbackQuery):

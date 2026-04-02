@@ -120,13 +120,29 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         dist = await session.get(District, data['district_id'])
         
         # Notify Masters
-        # We search users whose master_profile has the order category
+        # Filter by category AND district (or masters who work everywhere)
+        from sqlalchemy import or_, not_, exists
+        from database.models import master_district_areas
+        
         master_stmt = select(User).join(User.master_profile).join(MasterProfile.categories).where(
             User.role == UserRole.MASTER,
             User.notifications_enabled == True,
             User.visible_for_new_orders == True,
             Category.id == data['category_id']
         )
+        
+        # Add District filter
+        # A master should get notification if:
+        # 1. They have this district in their work areas
+        # 2. OR they have NO districts selected (works everywhere)
+        
+        has_no_districts = ~exists().where(master_district_areas.c.master_profile_id == MasterProfile.id)
+        works_in_district = exists().where(
+            (master_district_areas.c.master_profile_id == MasterProfile.id) & 
+            (master_district_areas.c.district_id == data['district_id'])
+        )
+        
+        master_stmt = master_stmt.where(or_(works_in_district, has_no_districts))
         
         res = await session.execute(master_stmt)
         masters_to_notify = res.scalars().all()
