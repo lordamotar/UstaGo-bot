@@ -32,16 +32,16 @@ class TransactionType(enum.Enum):
 master_category_subscriptions = Table(
     "master_category_subscriptions",
     Base.metadata,
-    Column("master_profile_id", ForeignKey("master_profiles.id"), primary_key=True),
-    Column("category_id", ForeignKey("categories.id"), primary_key=True),
+    Column("master_profile_id", ForeignKey("master_profiles.id", ondelete="CASCADE"), primary_key=True),
+    Column("category_id", ForeignKey("categories.id", ondelete="CASCADE"), primary_key=True),
 )
 
 # Association table for Master - District areas
 master_district_areas = Table(
     "master_district_areas",
     Base.metadata,
-    Column("master_profile_id", ForeignKey("master_profiles.id"), primary_key=True),
-    Column("district_id", ForeignKey("districts.id"), primary_key=True),
+    Column("master_profile_id", ForeignKey("master_profiles.id", ondelete="CASCADE"), primary_key=True),
+    Column("district_id", ForeignKey("districts.id", ondelete="CASCADE"), primary_key=True),
 )
 
 class User(Base):

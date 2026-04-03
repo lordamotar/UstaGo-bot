@@ -7,6 +7,7 @@ from database.models import User, Order, Category, District, OrderStatus, Master
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from bot.keyboards.client import get_inline_categories, get_inline_districts, get_order_confirmation_keyboard
+from bot.core.config import config
 
 router = Router()
 
@@ -16,7 +17,6 @@ async def start_order_creation(message: Message, state: FSMContext):
         user_stmt = select(User).where(User.telegram_id == message.from_user.id)
         user = (await session.execute(user_stmt)).scalar_one_or_none()
         
-    # 1. Check if we have user's phone number
     if not user or not user.phone_number:
         await state.set_state(OrderCreationStates.requiring_phone)
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -24,40 +24,33 @@ async def start_order_creation(message: Message, state: FSMContext):
         await message.answer("Для создания заявки нам необходим ваш номер телефона. Пожалуйста, поделитесь контактом:", reply_markup=kb)
         return
 
-    # 2. Proceed to category selection
     await state.set_state(OrderCreationStates.selecting_category)
     async with async_session_maker() as session:
         res = await session.execute(select(Category))
         categories = res.scalars().all()
     
     await message.answer(
-        "🏷️ *Выберите категорию услуги:*",
-        parse_mode="Markdown",
+        "🏷️ <b>Выберите категорию услуги:</b>",
+        parse_mode="HTML",
         reply_markup=get_inline_categories(categories)
     )
 
 @router.message(OrderCreationStates.requiring_phone, F.contact)
 async def process_phone_contact(message: Message, state: FSMContext):
-    """Saves shared contact and proceeds to category selection."""
     phone = message.contact.phone_number
     async with async_session_maker() as session:
-        # Update user's phone number
         await session.execute(update(User).where(User.telegram_id == message.from_user.id).values(phone_number=phone))
         await session.commit()
     
     await message.answer(f"✅ Номер {phone} привязан к вашему профилю.")
-    
-    # Now start actual order creation
     await state.set_state(OrderCreationStates.selecting_category)
     async with async_session_maker() as session:
         res = await session.execute(select(Category))
         categories = res.scalars().all()
     
     from bot.keyboards.client import get_client_main_menu
-    from bot.core.config import config
     is_admin = message.from_user.id in config.ADMIN_IDS
-    await message.answer("🏷️ *Выберите категорию услуги:*", parse_mode="Markdown", reply_markup=get_inline_categories(categories))
-    # Return to normal UI buttons
+    await message.answer("🏷️ <b>Выберите категорию услуги:</b>", parse_mode="HTML", reply_markup=get_inline_categories(categories))
     await message.answer("🛠 Используйте кнопки снизу для навигации.", reply_markup=get_client_main_menu(is_admin=is_admin))
 
 @router.callback_query(OrderCreationStates.selecting_category, F.data.startswith("sel_cat:"))
@@ -65,21 +58,20 @@ async def process_cat_selection(callback: CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split(":")[1])
     await state.update_data(category_id=cat_id)
     await state.set_state(OrderCreationStates.entering_description)
-    await callback.message.edit_text("📝 *Опишите, что нужно сделать:*", parse_mode="Markdown")
+    await callback.message.edit_text("📝 <b>Опишите, что нужно сделать:</b>", parse_mode="HTML")
     await callback.answer()
 
 @router.message(OrderCreationStates.entering_description)
 async def process_desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
     await state.set_state(OrderCreationStates.entering_budget)
-    await message.answer("💰 *Укажите ваш бюджет (в тенге):*\nОтправьте число или напишите «договорная».")
+    await message.answer("💰 <b>Укажите ваш бюджет (в тенге):</b>\nОтправьте число или напишите «договорная».", parse_mode="HTML")
 
 @router.message(OrderCreationStates.entering_budget)
 async def process_budget(message: Message, state: FSMContext):
     budget_text = message.text
     budget = None
     try:
-        # Simple extraction of number
         import re
         nums = re.findall(r'\d+', budget_text)
         if nums:
@@ -94,49 +86,80 @@ async def process_budget(message: Message, state: FSMContext):
         res = await session.execute(select(District))
         districts = res.scalars().all()
     
-    await message.answer("📍 *В каком районе нужно выполнить работу?*", parse_mode="Markdown", reply_markup=get_inline_districts(districts))
+    await message.answer("📍 <b>В каком районе нужно выполнить работу?</b>", parse_mode="HTML", reply_markup=get_inline_districts(districts))
 
 @router.callback_query(OrderCreationStates.selecting_district, F.data.startswith("sel_dist:"))
 async def process_dist_selection(callback: CallbackQuery, state: FSMContext):
     dist_id = int(callback.data.split(":")[1])
     await state.update_data(district_id=dist_id)
-    await state.set_state(OrderCreationStates.confirming)
+    await state.set_state(OrderCreationStates.uploading_photos)
     
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📸 Пропустить", callback_data="order_skip_photos")
+    ]])
+    await callback.message.edit_text(
+        "🖼 <b>Добавьте фото (необязательно)</b>\n\n"
+        "Вы можете отправить до 3 фотографий, чтобы мастер лучше понял задачу. Или нажмите кнопку «Пропустить».",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@router.message(OrderCreationStates.uploading_photos, F.photo)
+async def process_order_photos(message: Message, state: FSMContext):
+    data = await state.get_data()
+    photos = data.get("order_photos", [])
+    photos.append(message.photo[-1].file_id)
+    await state.update_data(order_photos=photos)
+    
+    if len(photos) >= 3:
+        await finish_order_photos(message, state)
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Готово", callback_data="order_finish_photos")
+        ]])
+        await message.answer(f"✅ Фото получено ({len(photos)}/3). Можно скинуть еще или нажать «Готово».", reply_markup=kb)
+
+@router.callback_query(F.data.in_(["order_skip_photos", "order_finish_photos"]))
+async def finish_order_photos_callback(callback: CallbackQuery, state: FSMContext):
+    await finish_order_photos(callback.message, state)
+    await callback.answer()
+
+async def finish_order_photos(message: Message, state: FSMContext):
+    await state.set_state(OrderCreationStates.confirming)
     data = await state.get_data()
     async with async_session_maker() as session:
         cat = await session.get(Category, data['category_id'])
-        dist = await session.get(District, dist_id)
-        
+        dist = await session.get(District, data['district_id'])
+    
+    photos_count = len(data.get("order_photos", []))
     text = (
-        "📊 *Ваша заявка:* \n\n"
+        "📊 <b>Проверьте вашу заявку:</b>\n\n"
         f"🏷️ Категория: {cat.name}\n"
         f"📝 Описание: {data['description']}\n"
         f"💰 Бюджет: {data['budget_text']}\n"
-        f"📍 Район: {dist.name}\n\n"
-        "Опубликовать?"
+        f"📍 Район: {dist.name}\n"
+        f"🖼 Фото: {photos_count if photos_count > 0 else 'Нет'}\n\n"
+        "<b>Опубликовать?</b>"
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=get_order_confirmation_keyboard())
-    await callback.answer()
+    await message.answer(text, parse_mode="HTML", reply_markup=get_order_confirmation_keyboard())
 
 @router.callback_query(OrderCreationStates.confirming, F.data == "order_confirm")
 async def confirm_order(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
     async with async_session_maker() as session:
-        # Get User internal ID by telegram_id
         user_stmt = select(User).where(User.telegram_id == callback.from_user.id)
-        user_res = await session.execute(user_stmt)
-        user = user_res.scalar_one_or_none()
+        user = (await session.execute(user_stmt)).scalar_one_or_none()
         
         if not user:
-            # Fallback if somehow user isn't in DB - should not happen if they used /start
             user = User(
                 telegram_id=callback.from_user.id,
                 full_name=callback.from_user.full_name,
                 username=callback.from_user.username
             )
             session.add(user)
-            await session.flush() # Ensure we get user.id before order creation
+            await session.flush()
         
         user_id = user.id
         
@@ -146,19 +169,18 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             district_id=data['district_id'],
             description=data['description'],
             budget=data['budget'],
+            photo_ids=data.get("order_photos", []),
             status=OrderStatus.NEW
         )
         session.add(new_order)
-        await session.flush() # Get ID without commit yet
+        await session.flush()
         order_id = new_order.id
         
-        # Get category and district names
         cat = await session.get(Category, data['category_id'])
         dist = await session.get(District, data['district_id'])
         
         # Notify Masters
-        # Filter by category AND district (or masters who work everywhere)
-        from sqlalchemy import or_, not_, exists
+        from sqlalchemy import or_, exists
         from database.models import master_district_areas
         
         master_stmt = select(User).join(User.master_profile).join(MasterProfile.categories).where(
@@ -168,7 +190,6 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             Category.id == data['category_id']
         )
         
-        # Add District filter
         has_no_districts = ~exists().where(master_district_areas.c.master_profile_id == MasterProfile.id)
         works_in_district = exists().where(
             (master_district_areas.c.master_profile_id == MasterProfile.id) & 
@@ -178,9 +199,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         
         res = await session.execute(master_stmt)
         masters_to_notify = res.scalars().all()
-        print(f"DEBUG: Found {len(masters_to_notify)} masters potentially for order {order_id}")
         
-        # 3. Filter by DND TIME for each master
         from datetime import datetime
         now_str = datetime.now().strftime("%H:%M")
         
@@ -189,39 +208,39 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             if start_s == end_s: return False
             if start_s < end_s:
                 return start_s <= now_s < end_s
-            else: # Crosses midnight
-                return now_s >= start_s or now_s < end_s
+            return now_s >= start_s or now_s < end_s
+
+        has_photos = len(data.get("order_photos", [])) > 0
+        photo_mark = "\n🖼 <b>Есть фото</b>" if has_photos else ""
 
         for master in masters_to_notify:
             if is_in_dnd(now_str, master.dnd_start, master.dnd_end):
-                print(f"DEBUG: Skipping Master {master.telegram_id} due to Silence Time ({master.dnd_start}-{master.dnd_end})")
                 continue
             try:
-                # SKIP notifying the person who created the order if they are also a master
                 if master.telegram_id == callback.from_user.id:
                     continue
                     
                 master_text = (
-                    f"🆕 *Новый заказ: {cat.name}!*\n\n"
+                    f"🆕 <b>Новый заказ: {cat.name}</b>\n\n"
                     f"📝 {data['description']}\n"
                     f"💰 Бюджет: {data['budget'] or 'Договорная'}\n"
                     f"📍 Район: {dist.name}"
+                    f"{photo_mark}"
                 )
                 
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="📥 Посмотреть и откликнуться", callback_data=f"master_view_order:{order_id}")
                 ]])
                 
-                await callback.bot.send_message(master.telegram_id, master_text, parse_mode="Markdown", reply_markup=keyboard)
-            except Exception as e:
-                print(f"ERROR: Failed to notify master {master.telegram_id}: {e}")
+                await callback.bot.send_message(master.telegram_id, master_text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
         
         await session.commit()
         
-    await callback.message.edit_text(f"🚀 *Заявка №{order_id} опубликована!*\n\nМастера получили уведомления и скоро начнут откликаться.", parse_mode="Markdown")
+    await callback.message.edit_text(f"🚀 <b>Заявка №{order_id} опубликована!</b>\n\nМастера получили уведомления и скоро начнут откликаться.", parse_mode="HTML")
     await state.clear()
-    from bot.core.config import config
-    is_admin = callback.from_user.id in config.ADMIN_IDS
     from bot.keyboards.client import get_client_main_menu
+    is_admin = callback.from_user.id in config.ADMIN_IDS
     await callback.message.answer("Вы в главном меню.", reply_markup=get_client_main_menu(is_admin=is_admin))
     await callback.answer()

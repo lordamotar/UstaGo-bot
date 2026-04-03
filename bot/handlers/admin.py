@@ -163,10 +163,11 @@ async def approve_master(callback: CallbackQuery):
                 except Exception: pass
                 
         tg_id = user.telegram_id
+        is_target_admin = tg_id in config.ADMIN_IDS
         await session.commit()
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")
     try:
-        await callback.bot.send_message(tg_id, "🎉 Ваш профиль мастера одобрен!", reply_markup=get_master_main_menu(is_admin=True))
+        await callback.bot.send_message(tg_id, "🎉 Ваш профиль мастера одобрен!", reply_markup=get_master_main_menu(is_admin=is_target_admin))
     except Exception: pass
     await callback.answer()
 
@@ -253,15 +254,22 @@ async def admin_add_cat_finish(message: Message, state: FSMContext):
 async def admin_del_cat(callback: CallbackQuery):
     cat_id = int(callback.data.split(":")[1])
     async with async_session_maker() as session:
-        # Check if used
-        used = (await session.execute(select(func.count(Order.id)).where(Order.category_id == cat_id))).scalar()
-        if used:
-            await callback.answer("❌ Нельзя удалить: есть заказы в этой категории!", show_alert=True)
+        # Check usage in orders and master subscriptions
+        orders_c = (await session.execute(select(func.count(Order.id)).where(Order.category_id == cat_id))).scalar()
+        masters_c = (await session.execute(
+            select(func.count(MasterProfile.id))
+            .join(MasterProfile.categories)
+            .where(Category.id == cat_id)
+        )).scalar()
+        
+        if orders_c:
+            await callback.answer(f"❌ Нельзя удалить: {orders_c} заказа(ов) в категории!", show_alert=True)
             return
+            
         cat = await session.get(Category, cat_id)
         await session.delete(cat)
         await session.commit()
-    await callback.answer("✅ Категория удалена.")
+    await callback.answer(f"✅ Категория удалена (затронуто мастеров: {masters_c})")
     await admin_manage_categories(callback.message)
 
 # --- DISTRICT MANAGEMENT ---
@@ -291,13 +299,19 @@ async def admin_add_dist_finish(message: Message, state: FSMContext):
 async def admin_del_dist(callback: CallbackQuery):
     dist_id = int(callback.data.split(":")[1])
     async with async_session_maker() as session:
-        # Check if used
-        used = (await session.execute(select(func.count(Order.id)).where(Order.district_id == dist_id))).scalar()
-        if used:
-            await callback.answer("❌ Нельзя удалить: есть заказы в этом районе!", show_alert=True)
+        orders_c = (await session.execute(select(func.count(Order.id)).where(Order.district_id == dist_id))).scalar()
+        masters_c = (await session.execute(
+            select(func.count(MasterProfile.id))
+            .join(MasterProfile.districts)
+            .where(District.id == dist_id)
+        )).scalar()
+        
+        if orders_c:
+            await callback.answer(f"❌ Нельзя удалить: {orders_c} заказа(ов) в этом районе!", show_alert=True)
             return
+            
         dist = await session.get(District, dist_id)
         await session.delete(dist)
         await session.commit()
-    await callback.answer("✅ Район удален.")
+    await callback.answer(f"✅ Район удален (затронуто мастеров: {masters_c})")
     await admin_manage_districts(callback.message)

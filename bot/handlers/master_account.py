@@ -350,11 +350,29 @@ async def master_view_order_callback(callback: CallbackQuery):
     async with async_session_maker() as session:
         stmt = select(Order).options(selectinload(Order.category), selectinload(Order.district)).where(Order.id == order_id)
         order = (await session.execute(stmt)).scalar_one_or_none()
+        
     if not order:
         await callback.answer("Заказ не найден.")
         return
-    text = f"📦 <b>Заказ №{order.id}: {order.category.name}</b>\n\n📝 {order.description}\n💰 Бюджет: {order.budget or 'Договорная'}\n📍 Район: {order.district.name if order.district else '—'}\n\n🏷️ <b>Стоимость отклика: 50 баллов.</b>"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Откликнуться", callback_data=f"start_bid:{order.id}")]])
+        
+    # Show photos if exist
+    if order.photo_ids:
+        try:
+            media = [InputMediaPhoto(media=p) for p in order.photo_ids]
+            await callback.message.answer_media_group(media=media)
+        except Exception:
+            pass
+            
+    text = (
+        f"📦 <b>Заказ №{order.id}: {order.category.name}</b>\n\n"
+        f"📝 {order.description}\n"
+        f"💰 Бюджет: {order.budget or 'Договорная'}\n"
+        f"📍 Район: {order.district.name if order.district else '—'}\n\n"
+        f"🏷️ <b>Стоимость отклика: 50 баллов.</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💬 Откликнуться", callback_data=f"start_bid:{order.id}")
+    ]])
     await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
     await callback.answer()
 

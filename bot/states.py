@@ -33,6 +33,7 @@ class OrderCreationStates(StatesGroup):
     entering_description = State()
     entering_budget = State()
     selecting_district = State()
+    uploading_photos = State()
     confirming = State()
 
 class BidStates(StatesGroup):
