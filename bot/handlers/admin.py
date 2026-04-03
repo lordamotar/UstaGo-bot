@@ -4,12 +4,13 @@ from aiogram.filters import Command
 from bot.core.config import config
 from database.engine import async_session_maker
 from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType, Order, OrderStatus, Category, District
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, delete
 from sqlalchemy.orm import selectinload
 from bot.keyboards.master import get_master_main_menu
 from bot.keyboards.admin import get_admin_main_menu, get_admin_back_inline, get_list_management_keyboard
-from bot.states import AdminStates
+from bot.states import AdminStates, BroadcastStates, UserManagementStates
 from aiogram.fsm.context import FSMContext
+from datetime import datetime, timedelta, timezone
 
 router = Router()
 
@@ -315,3 +316,157 @@ async def admin_del_dist(callback: CallbackQuery):
         await session.commit()
     await callback.answer(f"✅ Район удален (затронуто мастеров: {masters_c})")
     await admin_manage_districts(callback.message)
+
+@router.message(F.text == "📢 Рассылка")
+async def start_broadcast(message: Message, state: FSMContext):
+    if message.from_user.id not in config.ADMIN_IDS: return
+    await state.set_state(BroadcastStates.entering_text)
+    await message.answer("📢 <b>Режим рассылки</b>\n\nВведите текст сообщения (можно использовать HTML-разметку):", parse_mode="HTML")
+
+@router.message(BroadcastStates.entering_text)
+async def process_broadcast_text(message: Message, state: FSMContext):
+    await state.update_data(text=message.text)
+    await state.set_state(BroadcastStates.uploading_photo)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏩ Без фото", callback_data="skip_photo")]])
+    await message.answer("📸 Теперь отправьте фото для рассылки или нажмите кнопку ниже:", reply_markup=kb)
+
+@router.callback_query(F.data == "skip_photo", BroadcastStates.uploading_photo)
+async def skip_broadcast_photo(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(photo=None)
+    await show_broadcast_preview(callback.message, state)
+    await callback.answer()
+
+@router.message(BroadcastStates.uploading_photo, F.photo)
+async def process_broadcast_photo(message: Message, state: FSMContext):
+    await state.update_data(photo=message.photo[-1].file_id)
+    await show_broadcast_preview(message, state)
+
+async def show_broadcast_preview(message: Message, state: FSMContext):
+    data = await state.get_data()
+    text, photo = data['text'], data['photo']
+    await state.set_state(BroadcastStates.confirming)
+    
+    preview_text = f"📝 <b>Предпросмотр рассылки:</b>\n\n{text}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Запустить рассылку", callback_data="confirm_broadcast")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_broadcast")]
+    ])
+    
+    if photo:
+        await message.answer_photo(photo, caption=preview_text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.answer(preview_text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(BroadcastStates.confirming, F.data == "confirm_broadcast")
+async def execute_broadcast(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    text, photo = data['text'], data['photo']
+    if callback.message.photo:
+        await callback.message.edit_caption(caption="⏳ Рассылка запущена... Это может занять некоторое время.")
+    else:
+        await callback.message.edit_text("⏳ Рассылка запущена... Это может занять некоторое время.")
+    
+    async with async_session_maker() as session:
+        users = (await session.execute(select(User.telegram_id))).scalars().all()
+    
+    count = 0
+    for uid in users:
+        try:
+            if photo:
+                await callback.bot.send_photo(uid, photo, caption=text, parse_mode="HTML")
+            else:
+                await callback.bot.send_message(uid, text, parse_mode="HTML")
+            count += 1
+        except Exception: pass
+            
+    await callback.message.answer(f"✅ Рассылка завершена! Доставлено {count} пользователям.")
+    await state.clear()
+    await callback.answer()
+
+@router.callback_query(F.data == "cancel_broadcast")
+async def cancel_broadcast(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.answer("Рассылка отменена.")
+
+# --- BAN MANAGEMENT ---
+@router.message(F.text == "🚫 Баны")
+async def start_ban_management(message: Message, state: FSMContext):
+    if message.from_user.id not in config.ADMIN_IDS: return
+    await state.set_state(UserManagementStates.searching_user)
+    await message.answer("🔍 Введите ID пользователя (внутренний в базе) для управления баном:")
+
+@router.message(UserManagementStates.searching_user)
+async def process_user_ban_search(message: Message, state: FSMContext):
+    try:
+        user_id = int(message.text)
+    except ValueError:
+        await message.answer("⚠️ Введите числовой идентификатор.")
+        return
+        
+    async with async_session_maker() as session:
+        from sqlalchemy import or_
+        # Safety check: PostgreSQL INTEGER (int32) max value is 2,147,483,647
+        if user_id > 2147483647:
+            stmt = select(User).where(User.telegram_id == user_id)
+        else:
+            stmt = select(User).where(or_(User.id == user_id, User.telegram_id == user_id))
+            
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if not user:
+            await message.answer(f"❌ Пользователь #{user_id} не найден.")
+            return
+            
+    await state.update_data(target_user_id=user.id)
+    await state.set_state(UserManagementStates.selecting_ban_period)
+    
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    status = "✅ Активен"
+    if user.banned_until and user.banned_until > now:
+        status = f"🚫 Забанен до {user.banned_until.strftime('%d.%m.%Y %H:%M')}"
+        
+    text = (
+        f"👤 <b>Управление пользователем:</b> {user.full_name}\n"
+        f"🆔 ID записи: {user.id}\n"
+        f"📱 TG ID: <code>{user.telegram_id}</code>\n"
+        f"📊 Статус: {status}\n\n"
+        f"Выберите период для бана (или снимите бан):"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔓 Разбанить", callback_data="ban_set:0")],
+        [InlineKeyboardButton(text="24 часа", callback_data="ban_set:1"), InlineKeyboardButton(text="7 дней", callback_data="ban_set:7")],
+        [InlineKeyboardButton(text="1 месяц", callback_data="ban_set:30"), InlineKeyboardButton(text="6 месяцев", callback_data="ban_set:180")],
+        [InlineKeyboardButton(text="1 год", callback_data="ban_set:365"), InlineKeyboardButton(text="🔥 Пожизненно", callback_data="ban_set:99999")]
+    ])
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(UserManagementStates.selecting_ban_period, F.data.startswith("ban_set:"))
+async def process_ban_execution(callback: CallbackQuery, state: FSMContext):
+    days = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    uid = data['target_user_id']
+    
+    async with async_session_maker() as session:
+        user = (await session.execute(select(User).where(User.id == uid))).scalar_one()
+        old_tid = user.telegram_id
+        
+        if days == 0:
+            user.banned_until = None
+            msg = "⚡️ Ограничения с вашего аккаунта сняты. Пожалуйста, больше не нарушайте правила!"
+            admin_msg = f"✅ Пользователь #{uid} разбанен."
+        else:
+            ban_date = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=days)
+            user.banned_until = ban_date
+            msg = f"🚫 Ваш аккаунт заблокирован до {ban_date.strftime('%d.%m.%Y %H:%M')} за нарушение правил."
+            admin_msg = f"🚫 Пользователь #{uid} забанен на {days} дн."
+
+        await session.commit()
+    
+    try:
+        await callback.bot.send_message(old_tid, msg)
+    except Exception: pass
+    
+    await callback.message.edit_text(admin_msg)
+    await state.clear()
+    await callback.answer()

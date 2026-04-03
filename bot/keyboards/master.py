@@ -40,7 +40,7 @@ def get_master_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="📋 Мои заказы"), KeyboardButton(text="⭐ Рейтинг и отзывы")],
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💰 Баланс")],
         [KeyboardButton(text="🔗 Рефералы"), KeyboardButton(text="⚙️ Настройки")],
-        [KeyboardButton(text="🆘 Помощь"), KeyboardButton(text="🏠 Выход в главное меню")]
+        [KeyboardButton(text="📩 Обратная связь"), KeyboardButton(text="🏠 Выход в главное меню")]
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text="👨‍✈️ Админ-панель")])

@@ -1,5 +1,5 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from sqlalchemy import BigInteger, String, ForeignKey, Enum as SqlEnum, DateTime, Integer, Float, Boolean, Table, Column, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -57,6 +57,7 @@ class User(Base):
     # Referral system
     referred_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     points: Mapped[int] = mapped_column(default=100)
+    banned_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
     # Settings
     notifications_enabled: Mapped[bool] = mapped_column(default=True)
@@ -64,7 +65,7 @@ class User(Base):
     dnd_end: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)   # e.g. "08:00"
     visible_for_new_orders: Mapped[bool] = mapped_column(default=True)
     
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     master_profile: Mapped["MasterProfile"] = relationship(back_populates="user", uselist=False)
     transactions: Mapped[List["Transaction"]] = relationship(back_populates="user")
@@ -127,7 +128,7 @@ class Order(Base):
     status: Mapped[OrderStatus] = mapped_column(SqlEnum(OrderStatus), default=OrderStatus.NEW)
     photo_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     client: Mapped["User"] = relationship(back_populates="orders_created")
     category: Mapped["Category"] = relationship(back_populates="orders")
@@ -145,10 +146,30 @@ class Bid(Base):
     status: Mapped[str] = mapped_column(String(50), default="pending")
     message: Mapped[Optional[str]] = mapped_column(Text)
     
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     order: Mapped["Order"] = relationship(back_populates="bids")
     master: Mapped["MasterProfile"] = relationship(back_populates="bids")
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    message: Mapped[str] = mapped_column(Text)
+    is_replied: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    
+    user: Mapped["User"] = relationship()
+
+class SupportChat(Base):
+    __tablename__ = "support_chats"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_tid: Mapped[int] = mapped_column(BigInteger)
+    admin_tid: Mapped[int] = mapped_column(BigInteger)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 class Review(Base):
     __tablename__ = "reviews"
@@ -160,7 +181,7 @@ class Review(Base):
     
     rating: Mapped[int] = mapped_column(Integer)
     comment: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     order: Mapped["Order"] = relationship(back_populates="review")
 
@@ -174,6 +195,6 @@ class Transaction(Base):
     description: Mapped[Optional[str]] = mapped_column(String(255))
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"))
     
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     user: Mapped["User"] = relationship(back_populates="transactions")

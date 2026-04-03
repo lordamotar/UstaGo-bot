@@ -6,6 +6,7 @@ def get_admin_main_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="⏳ Заявки мастеров"), KeyboardButton(text="📋 Все заказы")],
         [KeyboardButton(text="👥 Пользователи"), KeyboardButton(text="💰 Пополнение баллов")],
         [KeyboardButton(text="🗂️ Категории"), KeyboardButton(text="📍 Районы")],
+        [KeyboardButton(text="📢 Рассылка"), KeyboardButton(text="🚫 Баны")],
         [KeyboardButton(text="🔙 Выход из админки")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)

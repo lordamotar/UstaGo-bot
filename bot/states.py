@@ -18,8 +18,22 @@ class EditProfileStates(StatesGroup):
     editing_description = State()
 
 class ManagePhotoStates(StatesGroup):
-    main = State()
     adding_photos = State()
+    confirm_save = State()
+
+class SupportStates(StatesGroup):
+    entering_message = State()
+    admin_replying = State()
+    active_chat = State()
+
+class BroadcastStates(StatesGroup):
+    entering_text = State()
+    uploading_photo = State()
+    confirming = State()
+
+class UserManagementStates(StatesGroup):
+    searching_user = State()
+    selecting_ban_period = State()
     deleting_photos = State()
 
 class SettingsStates(StatesGroup):
