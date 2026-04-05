@@ -80,7 +80,7 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
         "2. Опишите задачу и укажите цену\n"
         "3. Получите отклики от мастеров за минуту\n\n"
         "🎁 Ваш первый заказ — бонус 100 баллов.\n\n"
-        "👉 Кто вы?"
+        "👉 Кто вы? Выберите роль ниже 👇 нажмите на клавиатуру возле значка микрофона" 
     )
     
     from bot.core.config import config
@@ -109,7 +109,7 @@ async def process_accept_terms(callback: CallbackQuery, state: FSMContext):
     text = (
         "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"
         "Мы найдём проверенных мастеров в вашем районе.\n"
-        "👉 Кто вы?"
+        "👉 Кто вы? Выберите роль ниже 👇 нажмите на клавиатуру возле значка микрофона"
     )
     await callback.message.answer(text, reply_markup=get_role_keyboard(is_admin=is_admin))
     await callback.message.delete() # Remove the agreement message
@@ -163,10 +163,12 @@ async def handle_contact(message: Message):
             user.phone_number = message.contact.phone_number
             await session.commit()
             
+            from bot.core.config import config
+            is_admin = message.from_user.id in config.ADMIN_IDS
             from bot.keyboards.client import get_client_main_menu
             await message.answer(
                 "✅ Номер сохранен! Теперь вы можете создавать заявки.",
-                reply_markup=get_client_main_menu()
+                reply_markup=get_client_main_menu(is_admin=is_admin)
             )
 
 from bot.keyboards.master import get_master_main_menu
@@ -205,12 +207,6 @@ async def handle_master_role(message: Message, state: FSMContext):
     text = (
         "🧰 Отлично! Вы на шаг ближе к заказам.\n\n"
         "Мы поможем вам найти клиентов. Заполните короткую анкету:\n"
-        "1. Ваше имя\n"
-        "2. Категории услуг\n"
-        "3. Краткое описание\n"
-        "4. Ваш стаж\n"
-        "5. Фото ваших работ\n"
-        "6. Контактный номер\n\n"
         "🚀 Начнём! Напишите ваше имя в поле ввода <b>ниже</b> и отправьте его."
     )
     

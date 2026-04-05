@@ -69,9 +69,13 @@ async def finish_chat_handler(message: Message, state: FSMContext):
                 async with async_session_maker() as sub_session:
                     u = (await sub_session.execute(select(User).where(User.telegram_id == tid))).scalar_one_or_none()
                     if u:
-                        if u.role == UserRole.ADMIN: kb = get_admin_main_menu()
-                        elif u.role == UserRole.MASTER: kb = get_master_main_menu()
-                        else: kb = get_client_main_menu()
+                        is_admin = tid in config.ADMIN_IDS
+                        if u.role == UserRole.MASTER: 
+                            kb = get_master_main_menu(is_admin=is_admin)
+                        elif u.role == UserRole.ADMIN: 
+                            kb = get_admin_main_menu()
+                        else: 
+                            kb = get_client_main_menu(is_admin=is_admin)
                         
                         try:
                             await current_bot.send_message(tid, msg_text, parse_mode="HTML", reply_markup=kb)
