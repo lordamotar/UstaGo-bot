@@ -4,11 +4,12 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload, joinedload
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, MasterStatus, Category, Order, Bid, OrderStatus, Transaction, TransactionType, Review, District
+from database.models import User, MasterProfile, MasterStatus, Category, Order, Bid, OrderStatus, Transaction, TransactionType, Review, District, SystemSettings
 from bot.keyboards.master import (
     get_master_main_menu, get_profile_menu, get_orders_menu, 
     get_balance_menu, get_settings_menu, build_districts_keyboard,
-    get_edit_profile_inline_keyboard, get_photo_management_keyboard
+    get_edit_profile_inline_keyboard, get_photo_management_keyboard,
+    get_refill_methods_keyboard
 )
 from bot.states import EditProfileStates, ManagePhotoStates, SettingsStates, BidStates, ReviewStates
 from bot.core.config import config
@@ -489,16 +490,83 @@ async def show_rating_handler(message: Message):
 @router.message(F.text == "💰 Баланс")
 async def show_balance_handler(message: Message):
     async with async_session_maker() as session:
-        p = (await session.execute(select(User.points).where(User.telegram_id == message.chat.id))).scalar() or 0
+        u = (await session.execute(select(User).where(User.telegram_id == message.chat.id))).scalar()
+        p = u.points if u else 0
+        settings = await session.get(SystemSettings, 1)
     
+    # We display both existing ReplyMenu (for History/Back) and InlineKeyboard (for variants)
     text = (
         f"💰 <b>Ваш баланс: {p} баллов</b>\n\n"
-        f"🏷️ Стоимость одного отклика: 50 баллов.\n\n"
-        f"💳 <b>Как пополнить баланс?</b>\n"
-        f"Переведите необходимую сумму на Kaspi (по номеру +7775...) и отправьте скриншот в поддержку @admin. "
-        f"1 тенге = 1 балл."
+        f"🏷️ Стоимость одного отклика: 50 баллов.\n"
+        f"💎 1 тенге = 1 балл.\n\n"
+        f"👇 <b>Выберите способ пополнения:</b>"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_balance_menu())
+    
+    crypto_on = settings.crypto_enabled if settings else False
+    bank_on = settings.bank_enabled if settings else False
+    
+    await message.answer(
+        text, 
+        parse_mode="HTML", 
+        reply_markup=get_refill_methods_keyboard(crypto_on, bank_on)
+    )
+
+@router.callback_query(F.data.startswith("refill_master:"))
+async def refill_master_choice(callback: CallbackQuery):
+    method = callback.data.split(":")[1]
+    
+    async with async_session_maker() as session:
+        settings = await session.get(SystemSettings, 1)
+        if not settings: 
+            await callback.answer("❌ Настройки оплаты не найдены.")
+            return
+
+    details = settings.crypto_address if method == "crypto" else settings.bank_details
+    if not details:
+        await callback.answer("❌ Реквизиты временно не установлены.")
+        return
+
+    kb_buttons = []
+    is_link = details.startswith("http")
+    
+    if method == "crypto":
+        text = (
+            "💎 <b>Пополнение через Криптовалюту</b>\n\n"
+            "Вы можете использовать Telegram Wallet или перевести на адрес напрямую.\n\n"
+            f"Адрес для пополнения:\n<code>{details}</code>"
+        )
+        kb_buttons.append([InlineKeyboardButton(text="🔗 Telegram Wallet", url="https://t.me/wallet")])
+        if not is_link:
+             # Just show the address in <code> for copy
+             pass
+        else:
+             kb_buttons.append([InlineKeyboardButton(text="🚀 Перейти по ссылке", url=details)])
+             
+    else: # method == bank
+        if is_link:
+            text = (
+                "🏛 <b>Пополнение по ссылке</b>\n\n"
+                "Нажмите кнопку ниже для перехода к оплате."
+            )
+            kb_buttons.append([InlineKeyboardButton(text="🏛 Перейти к оплате", url=details)])
+        else:
+            text = (
+                "💳 <b>Пополнение по номеру карты</b>\n\n"
+                "Переведите необходимую сумму на карту ниже.\n\n"
+                f"Номер карты:\n<code>{details}</code>"
+            )
+            # Already in code tags for easy copying
+            
+    text += "\n\n📍 <b>ВАЖНО:</b> После оплаты отправьте скриншот квитанции в поддержку @admin."
+    
+    kb_markup = InlineKeyboardMarkup(inline_keyboard=kb_buttons) if kb_buttons else None
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb_markup)
+    await callback.answer()
+
+@router.callback_query(F.data == "refill_history")
+async def refill_history_callback(callback: CallbackQuery):
+    await callback.answer()
+    await show_transactions_handler(callback.message)
 
 @router.message(F.text == "📜 История операций")
 async def show_transactions_handler(message: Message):

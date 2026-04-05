@@ -21,12 +21,17 @@ async def start_order_creation(message: Message, state: FSMContext):
         await state.set_state(OrderCreationStates.requiring_phone)
         from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
         kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📱 Поделиться контактом", request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
-        await message.answer("Для создания заявки нам необходим ваш номер телефона. Пожалуйста, поделитесь контактом:", reply_markup=kb)
+        await message.answer(
+            "📱 Для создания заявки нам необходим ваш <b>номер телефона</b>.\n\n"
+            "Нажмите внизу кнопку <b>«📱 Поделиться контактом»</b> или прикрепите номер через 📎 (скрепку).",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
         return
 
     await state.set_state(OrderCreationStates.selecting_category)
     async with async_session_maker() as session:
-        res = await session.execute(select(Category))
+        res = await session.execute(select(Category).where(Category.is_active == True))
         categories = res.scalars().all()
     
     await message.answer(
@@ -45,7 +50,7 @@ async def process_phone_contact(message: Message, state: FSMContext):
     await message.answer(f"✅ Номер {phone} привязан к вашему профилю.")
     await state.set_state(OrderCreationStates.selecting_category)
     async with async_session_maker() as session:
-        res = await session.execute(select(Category))
+        res = await session.execute(select(Category).where(Category.is_active == True))
         categories = res.scalars().all()
     
     from bot.keyboards.client import get_client_main_menu
@@ -58,7 +63,11 @@ async def process_cat_selection(callback: CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split(":")[1])
     await state.update_data(category_id=cat_id)
     await state.set_state(OrderCreationStates.entering_description)
-    await callback.message.edit_text("📝 <b>Опишите, что нужно сделать:</b>", parse_mode="HTML")
+    await callback.message.edit_text(
+        "📝 <b>Опишите, что нужно сделать:</b>\n\n"
+        "Напишите сообщение в поле ввода ниже и отправьте его.",
+        parse_mode="HTML"
+    )
     await callback.answer()
 
 @router.message(OrderCreationStates.entering_description)
@@ -99,7 +108,8 @@ async def process_dist_selection(callback: CallbackQuery, state: FSMContext):
     ]])
     await callback.message.edit_text(
         "🖼 <b>Добавьте фото (необязательно)</b>\n\n"
-        "Вы можете отправить до 3 фотографий, чтобы мастер лучше понял задачу. Или нажмите кнопку «Пропустить».",
+        "Вы можете отправить до 3 фотографий (нажмите 📎 <b>скрепку</b> и выберите файл).\n"
+        "Или нажмите кнопку ниже <b>«📸 Пропустить»</b>, если фото не требуются.",
         parse_mode="HTML",
         reply_markup=kb
     )

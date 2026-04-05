@@ -56,8 +56,9 @@ class User(Base):
     
     # Referral system
     referred_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
-    points: Mapped[int] = mapped_column(default=100)
+    points: Mapped[int] = mapped_column(default=0)
     banned_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    agreed_to_terms: Mapped[bool] = mapped_column(default=False)
     
     # Settings
     notifications_enabled: Mapped[bool] = mapped_column(default=True)
@@ -76,6 +77,8 @@ class Category(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     masters: Mapped[List["MasterProfile"]] = relationship(
         secondary=master_category_subscriptions, back_populates="categories"
@@ -198,3 +201,27 @@ class Transaction(Base):
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     user: Mapped["User"] = relationship(back_populates="transactions")
+
+class SystemSettings(Base):
+    __tablename__ = "system_settings"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    crypto_enabled: Mapped[bool] = mapped_column(default=False)
+    crypto_address: Mapped[Optional[str]] = mapped_column(String(255))
+    bank_enabled: Mapped[bool] = mapped_column(default=False)
+    bank_details: Mapped[Optional[str]] = mapped_column(Text)
+
+class TopUpRequest(Base):
+    __tablename__ = "topup_requests"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    amount: Mapped[int] = mapped_column(Integer)
+    method: Mapped[str] = mapped_column(String(50)) # 'CRYPTO' or 'BANK'
+    status: Mapped[str] = mapped_column(String(20), default="PENDING") # PENDING, APPROVED, REJECTED
+    receipt_data: Mapped[Optional[str]] = mapped_column(Text) # Text or File ID
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    
+    user: Mapped["User"] = relationship()
+
+

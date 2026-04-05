@@ -23,7 +23,7 @@ async def process_name(message: Message, state: FSMContext):
     await state.set_state(RegistrationStates.selecting_categories)
     
     async with async_session_maker() as session:
-        res = await session.execute(select(Category))
+        res = await session.execute(select(Category).where(Category.is_active == True))
         categories = res.scalars().all()
         cats_list = [{"id": c.id, "name": c.name} for c in categories]
         await state.update_data(all_categories=cats_list, selected_categories=[])
@@ -92,16 +92,20 @@ async def process_photo(message: Message, state: FSMContext):
         
         keyboard = get_phone_sharing_keyboard()
         await message.answer(
-            "Максимум 3 фото получено. 6. Теперь поделитесь вашим номером телефона. "
-            "Он будет передаваться клиенту, когда вы договоритесь о заказе.",
-            reply_markup=keyboard
+            "✅ Максимум 3 фото получено.\n\n"
+            "6. <b>Последний шаг:</b> Поделитесь вашим номером телефона.\n"
+            "Нажмите кнопку внизу <b>«📱 Поделиться номером»</b> или прикрепите контакт через 📎 (скрепку).",
+            reply_markup=keyboard,
+            parse_mode="HTML"
         )
     else:
         keyboard = get_photo_done_keyboard()
         await message.answer(
-            f"✅ Фото №{count} получено.\n"
-            "Вы можете отправить еще (макс. 3) или нажать кнопку ниже, если закончили.",
-            reply_markup=keyboard
+            f"✅ Фото №{count} получено.\n\n"
+            "Вы можете отправить еще (макс. 3) тем же способом через 📎 (скрепку) "
+            "или нажмите кнопку ниже <b>«💾 Готово»</b>, если этого достаточно.",
+            reply_markup=keyboard,
+            parse_mode="HTML"
         )
 
 
@@ -140,9 +144,11 @@ async def process_experience(message: Message, state: FSMContext):
     ])
     
     await message.answer(
-        "Принято. 5. Теперь отправьте 1–3 фотографии ваших работ.\n"
-        "Когда закончите, нажмите кнопку ниже под сообщением.",
-        reply_markup=keyboard
+        "Принято. 5. Теперь отправьте от 1 до 3 <b>фотографий ваших работ</b>.\n\n"
+        "Нажмите внизу 📎 <b>(скрепку)</b>, выберите фото из галереи и отправьте его сообщением.\n"
+        "Когда закончите, нажмите кнопку <b>«💾 Готово»</b> под этим сообщением.",
+        reply_markup=keyboard,
+        parse_mode="HTML"
     )
 
 

@@ -38,8 +38,8 @@ async def start_support(message: Message, state: FSMContext):
     await state.set_state(SupportStates.entering_message)
     await message.answer(
         "👋 <b>Служба поддержки УстаGo</b>\n\n"
-        "Напишите ваше сообщение администрации. Мы ответим вам в ближайшее время.\n"
-        "Ваше обращение будет передано анонимно.",
+        "Напишите ваше обращение в поле ввода <b>ниже</b> и отправьте его сообщением.\n"
+        "Мы ответим вам в ближайшее время.",
         parse_mode="HTML"
     )
 

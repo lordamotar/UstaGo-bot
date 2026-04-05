@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.filters import CommandStart, CommandObject
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from bot.states import RegistrationStates
 
@@ -57,6 +57,21 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
                     await session.commit()
                     print(f"DEBUG: Referrer {inviter_id} added to existing user {message.from_user.id}")
 
+        if not user.agreed_to_terms:
+            text = (
+                "📜 <b>Публичная оферта и Соглашение</b>\n\n"
+                "Для использования бота UstaGo вам необходимо принять условия:\n"
+                "1. Вы соглашаетесь на обработку персональных данных (номер телефона).\n"
+                "2. Сервис является посредником и не несет ответственности за качество услуг.\n"
+                "3. Вы обязуетесь соблюдать правила сообщества.\n\n"
+                "Нажимая «✅ Принять и продолжить», вы подтверждаете свое согласие."
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Принять и продолжить", callback_data="accept_terms")
+            ]])
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+            return
+
     text = (
         "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"
         "Мы найдём проверенных мастеров в вашем районе.\n"
@@ -71,6 +86,33 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
     from bot.core.config import config
     is_admin = message.from_user.id in config.ADMIN_IDS
     await message.answer(text, reply_markup=get_role_keyboard(is_admin=is_admin))
+
+@router.callback_query(F.data == "accept_terms")
+async def process_accept_terms(callback: CallbackQuery, state: FSMContext):
+    """Processes user accepting terms."""
+    async with async_session_maker() as session:
+        user = (await session.execute(
+            select(User).where(User.telegram_id == callback.from_user.id)
+        )).scalar_one_or_none()
+        
+        if user:
+            user.agreed_to_terms = True
+            await session.commit()
+            
+    await callback.answer("✅ Условия приняты!")
+    
+    # Show main menu directly to the user who clicked
+    from bot.core.config import config
+    from bot.keyboards.registration import get_role_keyboard
+    
+    is_admin = callback.from_user.id in config.ADMIN_IDS
+    text = (
+        "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"
+        "Мы найдём проверенных мастеров в вашем районе.\n"
+        "👉 Кто вы?"
+    )
+    await callback.message.answer(text, reply_markup=get_role_keyboard(is_admin=is_admin))
+    await callback.message.delete() # Remove the agreement message
 
 @router.message(F.text == "👤 Я клиент")
 async def handle_client_role(message: Message, state: FSMContext):
@@ -169,9 +211,9 @@ async def handle_master_role(message: Message, state: FSMContext):
         "4. Ваш стаж\n"
         "5. Фото ваших работ\n"
         "6. Контактный номер\n\n"
-        "🚀 Начнём! Напишите, как вас зовут."
+        "🚀 Начнём! Напишите ваше имя в поле ввода <b>ниже</b> и отправьте его."
     )
     
     await state.set_state(RegistrationStates.entering_name)
-    await message.answer(text)
+    await message.answer(text, parse_mode="HTML")
 

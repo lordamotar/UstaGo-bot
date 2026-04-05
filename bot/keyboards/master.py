@@ -84,3 +84,14 @@ def get_settings_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="🔙 Назад в меню")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_refill_methods_keyboard(crypto_on: bool, bank_on: bool) -> InlineKeyboardMarkup:
+    """Keyboard for selecting active payment methods under Balance."""
+    keyboard = []
+    if crypto_on:
+        keyboard.append([InlineKeyboardButton(text="💎 Криптовалюта", callback_data="refill_master:crypto")])
+    if bank_on:
+        keyboard.append([InlineKeyboardButton(text="💳 Банковская карта / Ссылка", callback_data="refill_master:bank")])
+    
+    keyboard.append([InlineKeyboardButton(text="📜 История операций", callback_data="refill_history")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

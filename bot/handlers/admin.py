@@ -3,12 +3,18 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 from bot.core.config import config
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType, Order, OrderStatus, Category, District
-from sqlalchemy import select, func, update, delete
+from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType, Order, OrderStatus, Category, District, SystemSettings, TopUpRequest
+from sqlalchemy import select, func, update, delete, or_
 from sqlalchemy.orm import selectinload
 from bot.keyboards.master import get_master_main_menu
-from bot.keyboards.admin import get_admin_main_menu, get_admin_back_inline, get_list_management_keyboard
-from bot.states import AdminStates, BroadcastStates, UserManagementStates
+from bot.keyboards.admin import (
+    get_admin_main_menu, 
+    get_admin_back_inline, 
+    get_list_management_keyboard, 
+    get_payment_settings_keyboard,
+    get_topup_review_keyboard
+)
+from bot.states import AdminStates, BroadcastStates, UserManagementStates, PaymentSettingsStates
 from aiogram.fsm.context import FSMContext
 from datetime import datetime, timedelta, timezone
 
@@ -321,14 +327,22 @@ async def admin_del_dist(callback: CallbackQuery):
 async def start_broadcast(message: Message, state: FSMContext):
     if message.from_user.id not in config.ADMIN_IDS: return
     await state.set_state(BroadcastStates.entering_text)
-    await message.answer("📢 <b>Режим рассылки</b>\n\nВведите текст сообщения (можно использовать HTML-разметку):", parse_mode="HTML")
+    await message.answer(
+        "📢 <b>Режим рассылки</b>\n\n"
+        "Напишите текст сообщения в поле ввода ниже и отправьте его (можно использовать HTML-разметку):",
+        parse_mode="HTML"
+    )
 
 @router.message(BroadcastStates.entering_text)
 async def process_broadcast_text(message: Message, state: FSMContext):
     await state.update_data(text=message.text)
     await state.set_state(BroadcastStates.uploading_photo)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏩ Без фото", callback_data="skip_photo")]])
-    await message.answer("📸 Теперь отправьте фото для рассылки или нажмите кнопку ниже:", reply_markup=kb)
+    await message.answer(
+        "📸 Теперь отправьте <b>фото</b> для рассылки (через 📎 <b>скрепку</b>) или нажмите кнопку ниже:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "skip_photo", BroadcastStates.uploading_photo)
 async def skip_broadcast_photo(callback: CallbackQuery, state: FSMContext):
@@ -470,3 +484,155 @@ async def process_ban_execution(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(admin_msg)
     await state.clear()
     await callback.answer()
+
+# --- PAYMENT SETTINGS MANAGEMENT ---
+@router.message(F.text == "⚙️ Настройки оплаты")
+async def cmd_payment_settings(message: Message):
+    """Entry point for payment configuration."""
+    if message.from_user.id not in config.ADMIN_IDS: return
+    
+    async with async_session_maker() as session:
+        settings = await session.get(SystemSettings, 1)
+        if not settings:
+            settings = SystemSettings(id=1, crypto_enabled=False, bank_enabled=False)
+            session.add(settings)
+            await session.commit()
+            
+    text = (
+        "⚙️ <b>Настройки платежной системы</b>\n\n"
+        f"🔗 <b>Криптовалюта:</b> {'✅ ВКЛ' if settings.crypto_enabled else '❌ ВЫКЛ'}\n"
+        f"👛 Адрес: <code>{settings.crypto_address or 'Не установлен'}</code>\n\n"
+        f"🏛 <b>Банковский перевод:</b> {'✅ ВКЛ' if settings.bank_enabled else '❌ ВЫКЛ'}\n"
+        f"📝 Реквизиты: <code>{settings.bank_details or 'Не установлены'}</code>\n\n"
+        "Выберите действие ниже:"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=get_payment_settings_keyboard(settings.crypto_enabled, settings.bank_enabled))
+
+@router.callback_query(F.data.startswith("pay_toggle:"))
+async def process_pay_toggle(callback: CallbackQuery):
+    if callback.from_user.id not in config.ADMIN_IDS: return
+    method = callback.data.split(":")[1]
+    
+    async with async_session_maker() as session:
+        # Get using ID=1 as it's a single-row settings table
+        settings = await session.get(SystemSettings, 1)
+        if not settings: 
+            settings = SystemSettings(id=1)
+            session.add(settings)
+            
+        if method == "crypto":
+            settings.crypto_enabled = not settings.crypto_enabled
+        else:
+            settings.bank_enabled = not settings.bank_enabled
+        await session.commit()
+        
+    await callback.answer("✅ Настройки обновлены")
+    # Refresh the menu
+    await cmd_payment_settings(callback.message)
+    await callback.message.delete()
+
+@router.callback_query(F.data.startswith("pay_edit:"))
+async def process_pay_edit(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.ADMIN_IDS: return
+    method = callback.data.split(":")[1]
+    
+    if method == "crypto":
+        await state.set_state(PaymentSettingsStates.entering_crypto_address)
+        await callback.message.answer("⌨️ Введите <b>новый адрес</b> для оплаты криптовалютой:")
+    else:
+        await state.set_state(PaymentSettingsStates.entering_bank_details)
+        await callback.message.answer("⌨️ Введите <b>реквизиты</b> для банковского перевода (номер карты, ссылку или текст):")
+    
+    await callback.answer()
+
+@router.message(PaymentSettingsStates.entering_crypto_address)
+async def process_crypto_address(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        settings = await session.get(SystemSettings, 1)
+        settings.crypto_address = message.text
+        await session.commit()
+    await state.clear()
+    await message.answer(f"✅ Адрес криптовалюты обновлен на: <code>{message.text}</code>", parse_mode="HTML")
+    await cmd_payment_settings(message)
+
+@router.message(PaymentSettingsStates.entering_bank_details)
+async def process_bank_details(message: Message, state: FSMContext):
+    async with async_session_maker() as session:
+        settings = await session.get(SystemSettings, 1)
+        settings.bank_details = message.text
+        await session.commit()
+    await state.clear()
+    await message.answer(f"✅ Банковские реквизиты обновлены.", parse_mode="HTML")
+    await cmd_payment_settings(message)
+
+@router.callback_query(F.data == "pay_requests")
+async def list_topup_requests(callback: CallbackQuery):
+    if callback.from_user.id not in config.ADMIN_IDS: return
+    
+    async with async_session_maker() as session:
+        stmt = (
+            select(TopUpRequest)
+            .options(selectinload(TopUpRequest.user))
+            .where(TopUpRequest.status == "PENDING")
+            .order_by(TopUpRequest.created_at.desc())
+        )
+        requests = (await session.execute(stmt)).scalars().all()
+    
+    if not requests:
+        await callback.answer("✅ Ожидающих заявок нет.", show_alert=True)
+        return
+        
+    await callback.message.answer(f"📦 <b>Всего ожидающих заявок: {len(requests)}</b>", parse_mode="HTML")
+    
+    for req in requests:
+        text = (
+            f"💰 <b>Заявка на пополнение #{req.id}</b>\n\n"
+            f"👤 От: {req.user.full_name} (<code>{req.user.telegram_id}</code>)\n"
+            f"💵 Сумма: <b>{req.amount}</b> баллов\n"
+            f"🔹 Метод: {req.method}\n"
+            f"📅 Дата: {req.created_at.strftime('%d.%m.%Y %H:%M')}"
+        )
+        if req.receipt_photo:
+            await callback.bot.send_photo(callback.from_user.id, req.receipt_photo, caption=text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
+        else:
+            await callback.message.answer(text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("tr_"))
+async def process_topup_review(callback: CallbackQuery):
+    if callback.from_user.id not in config.ADMIN_IDS: return
+    action, request_id = callback.data.split(":")
+    request_id = int(request_id)
+    
+    async with async_session_maker() as session:
+        req = await session.get(TopUpRequest, request_id)
+        if not req or req.status != "PENDING":
+            await callback.answer("⚠️ Заявка уже обработана или не найдена.")
+            return
+            
+        user = await session.get(User, req.user_id)
+        
+        if action == "tr_approve":
+            req.status = "APPROVED"
+            user.points += req.amount
+            session.add(Transaction(
+                user_id=user.id,
+                amount=req.amount,
+                type=TransactionType.REFILL,
+                description=f"Пополнение баланса через {req.method}"
+            ))
+            msg = f"✅ <b>Ваша заявка на пополнение одобрена!</b>\nНачислено <b>{req.amount}</b> баллов."
+            admin_msg = f"✅ Заявка #{request_id} одобрена. Баллы начислены."
+        else:
+            req.status = "REJECTED"
+            msg = f"❌ <b>Ваша заявка на пополнение отклонена.</b>\nЕсли вы считаете это ошибкой, свяжитесь с поддержкой."
+            admin_msg = f"❌ Заявка #{request_id} отклонена."
+            
+        await session.commit()
+        
+    try:
+        await callback.bot.send_message(user.telegram_id, msg, parse_mode="HTML")
+    except Exception: pass
+    
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer(admin_msg)
+    await callback.message.answer(admin_msg)

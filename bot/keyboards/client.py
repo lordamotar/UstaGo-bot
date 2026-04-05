@@ -25,10 +25,22 @@ def get_client_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Main menu for clients."""
     keyboard = [
         [KeyboardButton(text="➕ Создать заявку")],
-        [KeyboardButton(text="⏳ Мои заявки"), KeyboardButton(text="👤 Мой профиль")],
-        [KeyboardButton(text="📩 Обратная связь"), KeyboardButton(text="🔨 Стать мастером")]
+        [KeyboardButton(text="⏳ Мои заявки"), KeyboardButton(text="💰 Пополнить баланс")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="📩 Обратная связь")],
+        [KeyboardButton(text="🔨 Стать мастером")]
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text="👨‍✈️ Админ-панель")])
         
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_payment_methods_keyboard(crypto_on: bool, bank_on: bool) -> InlineKeyboardMarkup:
+    """Keyboard for selecting active payment methods."""
+    keyboard = []
+    if crypto_on:
+        keyboard.append([InlineKeyboardButton(text="🔗 Криптовалюта (BTC/USDT)", callback_data="refill_method:crypto")])
+    if bank_on:
+        keyboard.append([InlineKeyboardButton(text="🏛 Банковский перевод (Карта/Ссылка)", callback_data="refill_method:bank")])
+    
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="refill_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

@@ -61,3 +61,11 @@ class ReviewStates(StatesGroup):
 class AdminStates(StatesGroup):
     adding_category = State()
     adding_district = State()
+
+class PaymentSettingsStates(StatesGroup):
+    entering_crypto_address = State()
+    entering_bank_details = State()
+
+class TopUpStates(StatesGroup):
+    entering_amount = State()
+    uploading_receipt = State()
