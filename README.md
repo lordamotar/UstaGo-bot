@@ -38,17 +38,19 @@
    ```
 
 2. **Настройте окружение**:
-   Создайте файл `.env`:
-   ```bash
+   Создайте файл `.env`. Рекомендуется использовать шаблон из `.env.example`.
+   Минимальные настройки:
+   ```env
    BOT_TOKEN=your_token_here
-   DB_URL=postgresql+asyncpg://user:pass@localhost:5432/ustago
-   ADMIN_IDS=312082048,12345678
+   DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/db_name
+   ADMIN_IDS=1234567,890123
    ```
 
-3. **Установите зависимости и запустите**:
+3. **Запустите проект** (с использованием `uv`):
    ```bash
    uv sync
-   uv run python main.py
+   uv run python reset_db.py  # Сброс и инициализация БД (если нужно)
+   uv run python main.py      # Запуск бота
    ```
 
 ## 📖 Документация

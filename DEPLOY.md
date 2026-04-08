@@ -32,7 +32,7 @@ sudo apt install -y git curl build-essential postgresql postgresql-contrib
 
 Установите менеджер пакетов `uv` (самый быстрый способ управления Python):
 ```bash
-curl -LsSf https://astral-sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.cargo/env
 ```
 
@@ -69,11 +69,18 @@ cd UstaGo-bot
 nano .env
 ```
 
-Вставьте в него свои данные:
+Вставьте в него свои данные (замените примеры на свои):
 ```env
 BOT_TOKEN=8763135642:AAE...ващ_токен
-DATABASE_URL=postgresql+asyncpg://ustago_admin:vash_slozhniy_parol@localhost:5432/ustago_db
 ADMIN_IDS=312082048,12345678
+
+# Настройки базы данных (DATABASE_URL + отдельные поля для надежности)
+DATABASE_URL=postgresql+asyncpg://ustago_admin:vash_pass@localhost:5432/ustago_db
+DB_USER=ustago_admin
+DB_NAME=ustago_db
+DB_PASS=vash_pass
+DB_HOST=localhost
+DB_PORT=5432
 ```
 
 ---
@@ -100,19 +107,20 @@ uv run python reset_db.py
 sudo nano /etc/systemd/system/ustago.service
 ```
 
-Текст для файла (замените `USER` на ваше имя пользователя в Linux):
+Текст для файла (замените `ubuntu` на ваше имя пользователя в Linux):
 ```ini
 [Unit]
 Description=UstaGo Telegram Bot Service
 After=network.target postgresql.service
 
 [Service]
-User=USER
-WorkingDirectory=/home/USER/UstaGo-bot
-ExecStart=/home/USER/.cargo/bin/uv run python main.py
+User=ubuntu
+WorkingDirectory=/home/ubuntu/UstaGo-bot
+# Запуск напрямую через Python из виртуального окружения
+ExecStart=/home/ubuntu/UstaGo-bot/.venv/bin/python main.py
 Restart=always
 RestartSec=5
-EnvironmentFile=/home/USER/UstaGo-bot/.env
+EnvironmentFile=/home/ubuntu/UstaGo-bot/.env
 
 [Install]
 WantedBy=multi-user.target

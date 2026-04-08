@@ -60,6 +60,11 @@ if [ ! -f ".env" ]; then
     cat <<EOF > .env
 BOT_TOKEN=$USER_BOT_TOKEN
 DATABASE_URL=postgresql+asyncpg://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
+DB_USER=$DB_USER
+DB_NAME=$DB_NAME
+DB_PASS=$DB_PASS
+DB_HOST=localhost
+DB_PORT=5432
 ADMIN_IDS=$USER_ADMIN_IDS
 EOF
     echo -e "${GREEN}✅ Файл .env успешно создан.${NC}"
@@ -89,7 +94,7 @@ After=network.target postgresql.service
 [Service]
 User=$CUR_USER
 WorkingDirectory=$CUR_DIR
-ExecStart=$HOME/.cargo/bin/uv run python main.py
+ExecStart=$CUR_DIR/.venv/bin/python main.py
 Restart=always
 RestartSec=5
 EnvironmentFile=$CUR_DIR/.env
