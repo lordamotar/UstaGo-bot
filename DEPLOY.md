@@ -11,7 +11,18 @@
 
 ---
 
-## 🛠️ Шаг 1: Подготовка сервера
+## ⚡️ Быстрый деплой (Рекомендуется)
+
+Если вы на чистом сервере Ubuntu/Debian, просто запустите этот скрипт. Он установит все зависимости, настроит базу данных и создаст системный сервис.
+
+```bash
+chmod +x scripts/setup.sh
+./scripts/setup.sh
+```
+
+---
+
+## 🛠️ Шаг 1: Подготовка сервера (Вручную)
 
 Обновите пакеты и установите зависимости:
 ```bash
@@ -112,6 +123,16 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable ustago
 sudo systemctl start ustago
+```
+
+---
+
+## 🔄 Обновление бота
+
+Чтобы подтянуть последние изменения из Git и перезапустить бота:
+```bash
+chmod +x scripts/update.sh
+./scripts/update.sh
 ```
 
 ---
