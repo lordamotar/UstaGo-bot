@@ -609,7 +609,16 @@ async def show_help(message: Message):
 async def show_refs(message: Message):
     bot = await message.bot.get_me()
     link = f"https://t.me/{bot.username}?start=ref_{message.chat.id}"
-    await message.answer(f"🔗 Ваша ссылка:\n`{link}`\n\nПолучайте бонусы за приглашение коллег!", parse_mode="Markdown")
+    text = (
+        f"🤝 <b>Приглашайте коллег и зарабатывайте!</b>\n\n"
+        f"Отправьте коллеге свою реферальную ссылку:\n"
+        f"<code>{link}</code>\n\n"
+        f"🎁 <b>Бонусы:</b>\n"
+        f"• Вам: <b>1000 баллов</b> за каждого нового мастера.\n"
+        f"• Коллеге: <b>2000 баллов</b> при регистрации (после одобрения).\n\n"
+        f"<i>Бонусы начисляются автоматически, как только приглашенный мастер пройдет модерацию.</i>"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 # --- SETTINGS TOGGLES ---
 @router.message(F.text == "🔔 Уведомления")

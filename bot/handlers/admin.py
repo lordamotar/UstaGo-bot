@@ -148,14 +148,23 @@ async def approve_master(callback: CallbackQuery):
         profile = (await session.execute(select(MasterProfile).where(MasterProfile.id == master_id))).scalar_one()
         profile.status = MasterStatus.APPROVED
         
-        # Referral reward for the inviter
+        # 🎁 WELCOME BONUS for the MASTER
+        user.points += 2000
+        session.add(Transaction(
+            user_id=user.id,
+            amount=2000,
+            type=TransactionType.REFERRAL_BONUS,
+            description="Приветственный бонус при регистрации"
+        ))
+
+        # 🎁 REFERRAL reward for the inviter
         if user.referred_by:
             inviter = await session.get(User, user.referred_by)
             if inviter:
-                inviter.points += 100
+                inviter.points += 1000
                 session.add(Transaction(
                     user_id=inviter.id,
-                    amount=100,
+                    amount=1000,
                     type=TransactionType.REFERRAL_BONUS,
                     description=f"Бонус за регистрацию мастера {user.full_name}"
                 ))
@@ -164,7 +173,7 @@ async def approve_master(callback: CallbackQuery):
                         inviter.telegram_id,
                         f"🎁 <b>Бонус за реферала!</b>\n\n"
                         f"Приглашенный вами мастер <b>{user.full_name}</b> успешно прошел проверку.\n"
-                        f"Вам начислено <b>100 баллов</b>!",
+                        f"Вам начислено <b>1000 баллов</b>!",
                         parse_mode="HTML"
                     )
                 except Exception: pass
@@ -174,7 +183,14 @@ async def approve_master(callback: CallbackQuery):
         await session.commit()
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")
     try:
-        await callback.bot.send_message(tg_id, "🎉 Ваш профиль мастера одобрен!", reply_markup=get_master_main_menu(is_admin=is_target_admin))
+        await callback.bot.send_message(
+            tg_id, 
+            f"🎉 <b>Ваш профиль мастера одобрен!</b>\n\n"
+            f"🎁 Вам начислено <b>2000 приветственных баллов</b>.\n"
+            f"Теперь вы можете откликаться на заказы.", 
+            reply_markup=get_master_main_menu(is_admin=is_target_admin),
+            parse_mode="HTML"
+        )
     except Exception: pass
     await callback.answer()
 
