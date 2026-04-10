@@ -52,6 +52,7 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     full_name: Mapped[str] = mapped_column(String(255))
     username: Mapped[Optional[str]] = mapped_column(String(255))
+    hashed_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone_number: Mapped[Optional[str]] = mapped_column(String(50))
     role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), default=UserRole.CLIENT)
     

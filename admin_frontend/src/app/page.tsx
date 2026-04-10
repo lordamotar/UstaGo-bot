@@ -13,8 +13,10 @@ import {
   BarChart3,
   CheckCircle2,
   CreditCard,
-  MapPin
+  MapPin,
+  Settings
 } from 'lucide-react';
+import ChangePasswordModal from '@/components/ChangePasswordModal';
 import { 
   BarChart, 
   Bar, 
@@ -32,10 +34,11 @@ import { motion } from 'framer-motion';
 export default function DashboardPage() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
-    const key = localStorage.getItem('admin_api_key');
+    const key = localStorage.getItem('admin_token');
     if (!key) {
       router.push('/login');
       return;
@@ -47,7 +50,7 @@ export default function DashboardPage() {
         setStats(response.data);
       } catch (err) {
         console.error(err);
-        localStorage.removeItem('admin_api_key');
+        localStorage.removeItem('admin_token');
         router.push('/login');
       } finally {
         setLoading(false);
@@ -58,7 +61,7 @@ export default function DashboardPage() {
   }, [router]);
 
   const handleLogout = () => {
-    localStorage.removeItem('admin_api_key');
+    localStorage.removeItem('admin_token');
     router.push('/login');
   };
 
@@ -116,6 +119,13 @@ export default function DashboardPage() {
             Справочники
           </button>
           <button 
+            onClick={() => setIsPasswordModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-xl transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            Пароль
+          </button>
+          <button 
             onClick={handleLogout}
             className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-xl transition-colors"
           >
@@ -124,6 +134,11 @@ export default function DashboardPage() {
           </button>
         </div>
       </div>
+
+      <ChangePasswordModal 
+        isOpen={isPasswordModalOpen} 
+        onClose={() => setIsPasswordModalOpen(false)} 
+      />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">

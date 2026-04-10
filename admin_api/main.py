@@ -3,10 +3,13 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
 from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-from fastapi.security import APIKeyHeader
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
 from bot.core.config import config
 
 app = FastAPI(title="UstaGo Admin API")
@@ -19,26 +22,110 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Security
-API_KEY_NAME = "X-API-Key"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+# Security Configuration
+SECRET_KEY = getattr(config, "JWT_SECRET_KEY", "your-secret-key-change-it-in-env")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-async def verify_api_key(api_key: str = Depends(api_key_header)):
-    # Use the first ADMIN_ID or a dedicated secret from env as the key for now
-    # Ideally, add ADMIN_API_KEY to .env
-    expected_key = getattr(config, "ADMIN_API_KEY", str(config.ADMIN_IDS[0]))
-    if api_key != expected_key:
-        raise HTTPException(status_code=403, detail="Could not validate credentials")
-    return api_key
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
-# Настройка CORS для фронтенда
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- AUTH UTILS ---
+
+def verify_password(plain_password, hashed_password):
+    if not hashed_password: return False
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+        
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.username == username)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        if user is None:
+            raise credentials_exception
+        if user.role != UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        return user
+
+# --- AUTH ENDPOINTS ---
+
+@app.post("/api/v1/auth/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    async with async_session_maker() as session:
+        # Пытаемся найти по username
+        stmt = select(User).where(User.username == form_data.username)
+        user = (await session.execute(stmt)).scalar_one_or_none()
+        
+        if not user or not verify_password(form_data.password, user.hashed_password):
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username}, expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/v1/auth/me")
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "full_name": current_user.full_name,
+        "role": current_user.role
+    }
+
+class PasswordChange(BaseModel):
+    old_password: str
+    new_password: str
+
+@app.post("/api/v1/auth/change-password")
+async def change_password(data: PasswordChange, current_user: User = Depends(get_current_user)):
+    if not verify_password(data.old_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=400,
+            detail="Incorrect old password"
+        )
+    
+    async with async_session_maker() as session:
+        stmt = update(User).where(User.id == current_user.id).values(
+            hashed_password=get_password_hash(data.new_password)
+        )
+        await session.execute(stmt)
+        await session.commit()
+        return {"status": "success", "message": "Password changed successfully"}
+
+# Редирект старой зависимости для совместимости на время перехода (постепенно заменим)
+async def verify_api_key(current_user: User = Depends(get_current_user)):
+    return current_user
 
 @app.get("/api/v1/health")
 async def health_check():

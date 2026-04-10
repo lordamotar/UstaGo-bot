@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ShieldCheck, Key } from 'lucide-react';
+import { ShieldCheck, User, Lock } from 'lucide-react';
 import { motion } from 'framer-motion';
+import api from '@/lib/api';
 
 export default function LoginPage() {
-  const [apiKey, setApiKey] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
@@ -17,22 +19,30 @@ export default function LoginPage() {
     setError('');
 
     try {
-      // Пробуем вызвать эндпоинт stats для проверки ключа
-      const response = await fetch('http://127.0.0.1:8000/api/v1/health');
-      
-      // На самом деле для проверки ключа нам нужно сделать запрос к защищенному эндпоинту
-      const checkResponse = await fetch('http://127.0.0.1:8000/api/v1/stats', {
-        headers: { 'X-API-Key': apiKey }
+      // Подготавливаем данные в формате x-www-form-urlencoded для FastAPI OAuth2
+      const formData = new URLSearchParams();
+      formData.append('username', username);
+      formData.append('password', password);
+
+      const response = await api.post('/auth/login', formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
-      if (checkResponse.ok) {
-        localStorage.setItem('admin_api_key', apiKey);
+      if (response.data.access_token) {
+        localStorage.setItem('admin_token', response.data.access_token);
         router.push('/');
       } else {
-        setError('Неверный API-ключ. Доступ запрещен.');
+        setError('Не удалось получить токен доступа.');
       }
-    } catch (err) {
-      setError('Ошибка соединения с сервером API.');
+    } catch (err: any) {
+      if (err.response && err.response.status === 401) {
+        setError('Неверный логин или пароль.');
+      } else {
+        setError('Ошибка при входе. Проверьте соединение с сервером.');
+      }
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -52,21 +62,36 @@ export default function LoginPage() {
             </div>
           </div>
           <h1 className="text-3xl font-bold gradient-text">UstaGo Admin</h1>
-          <p className="text-muted-foreground">Введите секретный ключ для доступа к панели</p>
+          <p className="text-muted-foreground">Войдите в систему управления</p>
         </div>
 
         <form onSubmit={handleLogin} className="space-y-6">
           <div className="space-y-2">
-            <label className="text-sm font-medium ml-1">Секретный ключ</label>
+            <label className="text-sm font-medium ml-1">Логин</label>
             <div className="relative">
-              <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+              <input
+                type="text"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full bg-secondary/50 border border-border rounded-xl py-3 pl-10 pr-4 focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
+                placeholder="Имя пользователя"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium ml-1">Пароль</label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
               <input
                 type="password"
                 required
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-secondary/50 border border-border rounded-xl py-3 pl-10 pr-4 focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
-                placeholder="Ваш ADMIN_API_KEY"
+                placeholder="••••••••"
               />
             </div>
           </div>
@@ -86,9 +111,15 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-primary hover:bg-primary/90 text-white font-bold py-3 rounded-xl shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:opacity-50"
           >
-            {loading ? 'Проверка...' : 'Войти в систему'}
+            {loading ? 'Вход...' : 'Войти в панель'}
           </button>
         </form>
+        
+        <div className="text-center">
+          <p className="text-xs text-muted-foreground pt-4 border-t border-border">
+            Если вы забыли данные, обратитесь к системному администратору
+          </p>
+        </div>
       </motion.div>
     </div>
   );
