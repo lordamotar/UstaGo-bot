@@ -29,8 +29,8 @@ echo "🚀 Запускаем Frontend (Next.js)..."
 cd admin_frontend
 pm2 stop ustago-frontend 2>/dev/null
 pm2 delete ustago-frontend 2>/dev/null
-# Запускаем собранный Next.js
-pm2 start "npm start" --name "ustago-frontend" -- --port 3000
+# Запускаем собранный Next.js с явным указанием рабочей папки
+pm2 start npm --name "ustago-frontend" --cwd "$(pwd)" -- start
 
 # Сохраняем текущие процессы, чтобы они сами запускались при перезагрузке сервера (reboot)
 pm2 save
