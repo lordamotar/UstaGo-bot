@@ -21,7 +21,7 @@ async def show_client_profile(message: Message):
         f"👤 <b>Ваш профиль клиента</b>\n\n"
         f"Имя: {user.full_name}\n"
         f"Телефон: {user.phone_number or '—'}\n"
-        f"Баланс: {user.points} баллов\n"
+        # f"Баланс: {user.points} баллов\n"
     )
     from bot.core.config import config
     is_admin = message.from_user.id in config.ADMIN_IDS

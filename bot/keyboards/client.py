@@ -25,7 +25,7 @@ def get_client_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Main menu for clients."""
     keyboard = [
         [KeyboardButton(text="➕ Создать заявку")],
-        [KeyboardButton(text="⏳ Мои заявки"), KeyboardButton(text="💰 Пополнить баланс")],
+        [KeyboardButton(text="⏳ Мои заявки")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="📩 Обратная связь")],
         [KeyboardButton(text="🔨 Стать мастером")]
     ]

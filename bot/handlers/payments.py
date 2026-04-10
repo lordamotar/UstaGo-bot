@@ -10,20 +10,20 @@ from sqlalchemy import select
 
 router = Router()
 
-@router.message(F.text == "💰 Пополнить баланс")
-async def refill_balance_start(message: Message):
-    """Shows available payment methods based on admin settings."""
-    async with async_session_maker() as session:
-        settings = await session.get(SystemSettings, 1)
-        if not settings or (not settings.crypto_enabled and not settings.bank_enabled):
-            await message.answer("❌ Извините, пополнение баланса временно недоступно. Обратитесь в поддержку.")
-            return
-            
-    text = (
-        "💰 <b>Пополнение баланса</b>\n\n"
-        "Выберите удобный способ оплаты ниже. После оплаты вам нужно будет прислать скриншот или фото квитанции для подтверждения."
-    )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_payment_methods_keyboard(settings.crypto_enabled, settings.bank_enabled))
+# @router.message(F.text == "💰 Пополнить баланс")
+# async def refill_balance_start(message: Message):
+#     """Shows available payment methods based on admin settings."""
+#     async with async_session_maker() as session:
+#         settings = await session.get(SystemSettings, 1)
+#         if not settings or (not settings.crypto_enabled and not settings.bank_enabled):
+#             await message.answer("❌ Извините, пополнение баланса временно недоступно. Обратитесь в поддержку.")
+#             return
+#             
+#     text = (
+#         "💰 <b>Пополнение баланса</b>\n\n"
+#         "Выберите удобный способ оплаты ниже. После оплаты вам нужно будет прислать скриншот или фото квитанции для подтверждения."
+#     )
+#     await message.answer(text, parse_mode="HTML", reply_markup=get_payment_methods_keyboard(settings.crypto_enabled, settings.bank_enabled))
 
 @router.callback_query(F.data == "refill_cancel")
 async def cancel_refill(callback: CallbackQuery, state: FSMContext):
