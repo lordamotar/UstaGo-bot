@@ -73,7 +73,7 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
             return
 
     text = (
-        "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"
+        "🔧 Добро пожаловать в «UstaGo Алматы»!\n\n"
         "Мы найдём проверенных мастеров в вашем районе.\n"
         "Всё просто:\n"
         "1. Нажмите «Создать заявку»\n"
@@ -107,7 +107,7 @@ async def process_accept_terms(callback: CallbackQuery, state: FSMContext):
     
     is_admin = callback.from_user.id in config.ADMIN_IDS
     text = (
-        "🔧 Добро пожаловать в «Семей-Мастер»!\n\n"
+        "🔧 Добро пожаловать в «UstaGo Алматы»!\n\n"
         "Мы найдём проверенных мастеров в вашем районе.\n"
         "👉 Кто вы? Выберите роль ниже 👇 нажмите на клавиатуру возле значка микрофона"
     )
@@ -146,7 +146,7 @@ async def handle_client_role(message: Message, state: FSMContext):
     
     await message.answer(
         "🌆 <b>Добро пожаловать в кабинет клиента!</b>\n\n"
-        "Здесь вы можете создать заявку и получить отклики от лучших мастеров города Семей.",
+        "Здесь вы можете создать заявку и получить отклики от лучших мастеров города Алматы.",
         parse_mode="HTML",
         reply_markup=get_client_main_menu(is_admin=is_admin)
     )

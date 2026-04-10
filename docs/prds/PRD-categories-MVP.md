@@ -5,7 +5,7 @@
 **Version**: 1.0
 
 ## 1. Problem Statement
-To successfully launch "Устаго" (Семей-Мастер) in Semey, we need a focused structural taxonomy of services that addresses the highest frequency and most critical daily needs of local residents. An overly complex list of categories will overwhelm clients and deter masters from completing registration. We need an MVP category tree that allows masters to accurately define their skills while keeping the client experience simple and intuitive.
+To successfully launch "UstaGo" (Алматы-Мастер) in Almaty, we need a focused structural taxonomy of services that addresses the highest frequency and most critical daily needs of local residents. An overly complex list of categories will overwhelm clients and deter masters from completing registration. We need an MVP category tree that allows masters to accurately define their skills while keeping the client experience simple and intuitive.
 
 **Evidence:**
 - Fast adoption requires low cognitive load during onboarding.

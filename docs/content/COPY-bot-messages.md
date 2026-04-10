@@ -4,7 +4,7 @@
 
 ## Audience-First Strategy
 Our goal is to lower friction and increase trust.
-- **For Clients**: Simple, reassuring, local focus ("Семей-Мастер"). Emphasize speed and reliability.
+- **For Clients**: Simple, reassuring, local focus ("Алматы-Мастер"). Emphasize speed and reliability.
 - **For Masters**: Highlight the ultimate benefit (Free job leads). Create a sense of an exclusive professional club. Give clear instructions.
 
 ---
@@ -13,7 +13,7 @@ Our goal is to lower friction and increase trust.
 
 **Message Trigger**: `/start` (Initial Welcome)
 ```text
-🔧 Добро пожаловать в «Семей-Мастер»!
+🔧 Добро пожаловать в «Алматы-Мастер»!
 
 Мы найдём проверенных мастеров в вашем районе.
 Всё просто:
