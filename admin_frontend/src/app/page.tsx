@@ -157,47 +157,19 @@ export default function DashboardPage() {
         />
         <StatCard 
           icon={<ShoppingBag className="text-orange-400" />} 
-          title="Активных заказов" 
-          value={stats.orders.active} 
-          subtitle={`${stats.orders.new} новых заявок`}
+          title="Заказов" 
+          value={stats.orders.active + stats.orders.new + stats.orders.completed} 
+          subtitle={`${stats.orders.completed} завершено`}
         />
         <StatCard 
-          icon={<TrendingUp className="text-green-400" />} 
-          title="Эффективность" 
-          value="84%" 
-          subtitle="+12% за неделю"
+          icon={<CreditCard className="text-green-400" />} 
+          title="Оборот (баллы)" 
+          value={stats.finance.total_revenue} 
+          subtitle={`Всего пополнений: ${stats.finance.total_deposits}`}
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main Chart */}
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="lg:col-span-2 glass-card p-6 rounded-2xl"
-        >
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-primary" />
-              Распределение пользователей
-            </h2>
-          </div>
-          <div className="h-[300px] w-full min-h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="name" stroke="#94a3b8" />
-                <YAxis stroke="#94a3b8" />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px' }}
-                  itemStyle={{ color: '#f8fafc' }}
-                />
-                <Bar dataKey="value" fill="#6366f1" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </motion.div>
-
         {/* Status Breakdown */}
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
@@ -207,13 +179,13 @@ export default function DashboardPage() {
         >
           <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
             <CheckCircle2 className="w-5 h-5 text-primary" />
-            Доля ролей
+            Статусы заказов
           </h2>
           <div className="h-[250px] w-full min-h-[250px]">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={chartData}
+                  data={stats.order_status_distribution}
                   cx="50%"
                   cy="50%"
                   innerRadius={60}
@@ -221,8 +193,8 @@ export default function DashboardPage() {
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  {stats.order_status_distribution.map((entry: any, index: number) => (
+                    <Cell key={`cell-${index}`} fill={['#6366f1', '#10b981', '#f59e0b', '#ef4444'][index % 4]} />
                   ))}
                 </Pie>
                 <Tooltip 
@@ -232,15 +204,75 @@ export default function DashboardPage() {
             </ResponsiveContainer>
           </div>
           <div className="space-y-3 mt-4">
-            {chartData.map((item, i) => (
+            {stats.order_status_distribution.map((item: any, i: number) => (
               <div key={item.name} className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[i] }} />
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: ['#6366f1', '#10b981', '#f59e0b', '#ef4444'][i % 4] }} />
                   <span className="text-sm text-muted-foreground">{item.name}</span>
                 </div>
                 <span className="font-bold">{item.value}</span>
               </div>
             ))}
+          </div>
+        </motion.div>
+
+        {/* Categories Breakdown */}
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="lg:col-span-2 glass-card p-6 rounded-2xl"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <ShoppingBag className="w-5 h-5 text-primary" />
+              Заказы по категориям
+            </h2>
+          </div>
+          <div className="h-[350px] w-full min-h-[350px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.categories_breakdown} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
+                <XAxis type="number" stroke="#94a3b8" />
+                <YAxis dataKey="name" type="category" stroke="#94a3b8" width={120} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px' }}
+                  itemStyle={{ color: '#f8fafc' }}
+                />
+                <Bar dataKey="count" fill="#6366f1" radius={[0, 8, 8, 0]} label={{ position: 'right', fill: '#94a3b8' }} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </motion.div>
+
+        {/* Districts Breakdown */}
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="glass-card p-6 rounded-2xl"
+        >
+          <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
+            <MapPin className="w-5 h-5 text-primary" />
+            Топ районов
+          </h2>
+          <div className="space-y-6">
+            {stats.districts_breakdown.map((d: any, i: number) => (
+              <div key={d.name} className="relative">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium">{d.name}</span>
+                  <span className="text-sm text-primary font-bold">{d.count}</span>
+                </div>
+                <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${(d.count / (stats.districts_breakdown[0]?.count || 1)) * 100}%` }}
+                    className="h-full bg-primary"
+                  />
+                </div>
+              </div>
+            ))}
+            {stats.districts_breakdown.length === 0 && (
+              <p className="text-muted-foreground text-center py-10">Нет данных по районам</p>
+            )}
           </div>
         </motion.div>
       </div>

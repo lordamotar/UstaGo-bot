@@ -168,8 +168,47 @@ async def get_mini_stats():
             },
             "orders": {
                 "active": active_orders,
-                "new": new_orders
-            }
+                "new": new_orders,
+                "completed": (await session.execute(
+                    select(func.count(Order.id)).where(Order.status == OrderStatus.COMPLETED)
+                )).scalar() or 0
+            },
+            "finance": {
+                "total_points_in_system": (await session.execute(select(func.sum(User.points)))).scalar() or 0,
+                "total_deposits": (await session.execute(
+                    select(func.sum(TopUpRequest.amount)).where(TopUpRequest.status == "APPROVED")
+                )).scalar() or 0,
+                "total_revenue": (await session.execute(
+                    select(func.abs(func.sum(Transaction.amount)))
+                    .where(Transaction.type == TransactionType.CONTACT_FEE)
+                )).scalar() or 0
+            },
+            "categories_breakdown": [
+                {"name": name, "count": count}
+                for name, count in (await session.execute(
+                    select(Category.name, func.count(Order.id))
+                    .join(Order, Order.category_id == Category.id)
+                    .group_by(Category.name)
+                    .order_by(func.count(Order.id).desc())
+                )).all()
+            ],
+            "districts_breakdown": [
+                {"name": name, "count": count}
+                for name, count in (await session.execute(
+                    select(District.name, func.count(Order.id))
+                    .join(Order, Order.district_id == District.id)
+                    .group_by(District.name)
+                    .order_by(func.count(Order.id).desc())
+                    .limit(5)
+                )).all()
+            ],
+            "order_status_distribution": [
+                {"name": status.value, "value": count}
+                for status, count in (await session.execute(
+                    select(Order.status, func.count(Order.id))
+                    .group_by(Order.status)
+                )).all()
+            ]
         }
 
 # --- SCHEMAS ---
