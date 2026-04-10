@@ -58,7 +58,7 @@ export default function OrdersPage() {
     }
   };
 
-  const getStatusName = (status: str) => {
+  const getStatusName = (status: string) => {
     switch (status) {
       case 'NEW': return 'Новый';
       case 'ACTIVE': return 'В работе';
