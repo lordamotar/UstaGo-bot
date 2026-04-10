@@ -1,43 +1,44 @@
 # UstaGo Bot (Marketplace)
 
-Инновационный Telegram-бот для поиска мастеров и управления заказами.
+Инновационный Telegram-бот для поиска мастеров и управления заказами с мощной панелью управления.
 
 ## 🌟 Основные возможности
 - **Для заказчиков**: Быстрое создание заявок, выбор категорий, уведомления об откликах.
 - **Для мастеров**: Профессиональный профиль, фильтрация заказов по районам и категориям, система баланса.
-- **Для админов**: Полная панель управления (Next.js), статистика, модерация пользователей и финансов.
+- **Для админов**: Современный дашборд с аналитикой, модерация пользователей, управление финансами и категориями.
 
 ## 🚀 Технологический стек
-- **Bot**: Python 3.10+, `aiogram 3.x`
-- **Database**: PostgreSQL + `SQLAlchemy` (Async)
+- **Bot**: Python 3.12+, `aiogram 3.x`
+- **Database**: PostgreSQL + `SQLAlchemy` (Async) + `Alembic`
 - **Admin Panel**: 
   - Backend: FastAPI
-  - Frontend: Next.js + TailwindCSS + Lucide
-- **Infrastructure**: PM2, Systemd, nginx
+  - Frontend: Next.js + TailwindCSS + Lucide + Recharts
+- **Infrastructure**: PM2, Systemd, nginx, `uv`
 
-## 📦 Быстрый старт на сервере
+## 📦 Управление проектом
 
-1. Клонируйте репозиторий:
+Все действия по управлению проектом теперь вынесены в папку `scripts/` для безопасности и удобства:
+
+1. **Первичная установка**:
 ```bash
-git clone https://github.com/lordamotar/UstaGo-bot.git
-cd UstaGo-bot
-```
-
-2. Запустите установку:
-```bash
-chmod +x scripts/setup.sh
+chmod +x scripts/*.sh
 ./scripts/setup.sh
 ```
 
-3. Для последующих обновлений используйте:
+2. **Обновление кода (деплой)**:
 ```bash
-./deploy.sh
+./scripts/update.sh
+```
+
+3. **Миграции базы данных** (если изменилась структура):
+```bash
+./scripts/migrate.sh
 ```
 
 ## 📜 Документация
-- [Инструкция по деплою](DEPLOY.md)
-- [Техническое задание (PRD)](docs/prds/)
-- [Структура базы данных](database/models.py)
+- [🚀 Подробная инструкция по деплою](DEPLOY.md)
+- [📝 Техническое задание (PRD)](docs/prds/)
+- [🗄️ Схема базы данных](database/models.py)
 
 ---
-© 2024 UstaGo Team
+© 2026 UstaGo - Professional Marketplace Platform

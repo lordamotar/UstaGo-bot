@@ -78,7 +78,7 @@ uv sync
 
 # 7. Инициализация базы данных
 echo -e "${YELLOW}🏗 Шаг 6: Создание таблиц и начальных данных...${NC}"
-uv run python reset_db.py
+PYTHONPATH=. uv run python scripts/reset_db.py
 
 # 8. Настройка Systemd сервиса
 echo -e "${YELLOW}⚙️ Шаг 7: Создание системного сервиса (ustago.service)...${NC}"
