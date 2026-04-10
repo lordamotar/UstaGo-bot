@@ -105,6 +105,7 @@ class MasterProfile(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     experience: Mapped[Optional[str]] = mapped_column(String(255))
     rating: Mapped[float] = mapped_column(Float, default=0.0)
+    is_accredited: Mapped[bool] = mapped_column(default=False)
     
     # Portfolio
     work_photos: Mapped[Optional[list]] = mapped_column(JSON, default=list)

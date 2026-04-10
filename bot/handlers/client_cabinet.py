@@ -136,8 +136,9 @@ async def process_view_order(message: Message, order_id: int):
         for bid in order.bids:
             if order.status == OrderStatus.NEW and bid.status != "rejected":
                 m_user = bid.master.user
+                acc_badge = "🏅 " if bid.master.is_accredited else ""
                 b_text = (
-                    f"👷 <b>Мастер:</b> {m_user.full_name} ({bid.master.rating}⭐)\n"
+                    f"👷 <b>Мастер:</b> {acc_badge}{m_user.full_name} ({bid.master.rating}⭐)\n"
                     f"🏷️ Цена: {bid.suggested_price or 'Договорная'}\n"
                     f"📩 Сообщение: {bid.message or '—'}"
                 )
@@ -200,8 +201,9 @@ async def client_view_master_details(callback: CallbackQuery):
         rev_stmt = select(Review).where(Review.to_user_id == profile.user_id).order_by(Review.created_at.desc()).limit(5)
         reviews = (await session.execute(rev_stmt)).scalars().all()
         
+    acc_badge = "🏅 " if profile.is_accredited else ""
     text = (
-        f"👷 <b>Профиль мастера: {profile.user.full_name}</b>\n\n"
+        f"👷 <b>Профиль мастера: {acc_badge}{profile.user.full_name}</b>\n\n"
         f"⭐ Рейтинг: {profile.rating:.1f} / 5.0\n"
         f"⏳ Стаж: {profile.experience or '—'}\n\n"
         f"📝 <b>О себе:</b>\n{profile.description or '—'}\n\n"

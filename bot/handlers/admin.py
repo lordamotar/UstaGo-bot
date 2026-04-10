@@ -61,6 +61,32 @@ async def list_pending_masters(message: Message):
     
     await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
+@router.message(F.text == "👷 Список мастеров")
+async def list_approved_masters(message: Message):
+    if message.from_user.id not in config.ADMIN_IDS: return
+    async with async_session_maker() as session:
+        stmt = select(MasterProfile).options(selectinload(MasterProfile.user)).where(MasterProfile.status == MasterStatus.APPROVED)
+        masters = (await session.execute(stmt)).scalars().all()
+    
+    if not masters:
+        await message.answer("🤷‍♂️ В базе пока нет подтвержденных мастеров.")
+        return
+        
+    text = "👷 <b>Список подтвержденных мастеров:</b>"
+    kb = []
+    for m in masters:
+        acc = "🏅 " if m.is_accredited else ""
+        kb.append([InlineKeyboardButton(text=f"{acc}{m.user.full_name} ({m.rating}⭐)", callback_data=f"admin_view_master:{m.id}")])
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data == "admin_back")
+async def admin_back_to_menu(callback: CallbackQuery):
+    await callback.message.delete()
+    # Simple back to main admin menu or just do nothing if we want to keep current menu
+    await admin_start(callback.message)
+    await callback.answer()
+
 @router.message(F.text == "📋 Все заказы")
 async def list_all_orders(message: Message):
     if message.from_user.id not in config.ADMIN_IDS: return
@@ -119,23 +145,48 @@ async def view_master_details(callback: CallbackQuery):
     if not profile:
         await callback.answer("Master not found.")
         return
+    acc_status = "✅ ДА" if profile.is_accredited else "❌ НЕТ"
     text = (
         f"👷 <b>Мастер #{profile.id}</b>\n\n"
         f"👤 Имя: {profile.user.full_name}\n"
         f"📅 Стаж: {profile.experience or '—'}\n"
         f"🗂 Категории: {', '.join([c.name for c in profile.categories])}\n"
         f"💬 О себе: {profile.description or '—'}\n"
+        f"🏅 Аккредитация: {acc_status}\n"
         f"TG: @{profile.user.username or 'no_user'} (<code>{profile.user.telegram_id}</code>)"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    
+    kb_list = [
         [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"admin_approve:{profile.id}"),
-         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_reject:{profile.id}")]
-    ])
+         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_reject:{profile.id}")],
+        [InlineKeyboardButton(text="🏅 Аккредитация: ВКЛ/ВЫКЛ", callback_data=f"admin_toggle_acc:{profile.id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
+    
     if profile.work_photos:
         media = [InputMediaPhoto(media=p) for p in profile.work_photos]
         await callback.message.answer_media_group(media=media)
     await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
     await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_toggle_acc:"))
+async def toggle_master_accreditation(callback: CallbackQuery):
+    if callback.from_user.id not in config.ADMIN_IDS: return
+    master_id = int(callback.data.split(":")[1])
+    async with async_session_maker() as session:
+        stmt = select(MasterProfile).where(MasterProfile.id == master_id)
+        profile = (await session.execute(stmt)).scalar_one_or_none()
+        if profile:
+            profile.is_accredited = not profile.is_accredited
+            status = "аккредитован" if profile.is_accredited else "обычный статус"
+            await session.commit()
+            await callback.answer(f"✅ Мастер теперь {status}!", show_alert=True)
+            # Update message
+            await view_master_details(callback)
+            await callback.message.delete()
+        else:
+            await callback.answer("❌ Мастер не найден.")
 
 @router.callback_query(F.data.startswith("admin_approve:"))
 async def approve_master(callback: CallbackQuery):

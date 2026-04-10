@@ -3,11 +3,12 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 def get_admin_main_menu() -> ReplyKeyboardMarkup:
     """Main administrative keyboard."""
     keyboard = [
-        [KeyboardButton(text="⏳ Заявки мастеров"), KeyboardButton(text="📋 Все заказы")],
-        [KeyboardButton(text="👥 Пользователи"), KeyboardButton(text="💰 Пополнение баллов")],
+        [KeyboardButton(text="⏳ Заявки мастеров"), KeyboardButton(text="👷 Список мастеров")],
+        [KeyboardButton(text="📋 Все заказы"), KeyboardButton(text="👥 Пользователи")],
+        [KeyboardButton(text="💰 Пополнение баллов"), KeyboardButton(text="📢 Рассылка")],
         [KeyboardButton(text="🗂️ Категории"), KeyboardButton(text="📍 Районы")],
-        [KeyboardButton(text="📢 Рассылка"), KeyboardButton(text="⚙️ Настройки оплаты")],
-        [KeyboardButton(text="🚫 Баны"), KeyboardButton(text="🔙 Выход из админки")]
+        [KeyboardButton(text="⚙️ Настройки оплаты"), KeyboardButton(text="🚫 Баны")],
+        [KeyboardButton(text="🔙 Выход из админки")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
