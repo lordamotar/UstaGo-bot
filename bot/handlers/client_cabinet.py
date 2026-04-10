@@ -397,20 +397,36 @@ async def client_confirm_cancel_order_callback(callback: CallbackQuery):
         
     await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
     
-    # Notify Master(s)
+    # Notify Master(s) and Refund Points
+    from database.models import Transaction, TransactionType
     for tid, status in bidders:
         try:
+            # Return points (50 per bid)
+            async with async_session_maker() as session:
+                master_user = (await session.execute(select(User).where(User.telegram_id == tid))).scalar_one_or_none()
+                if master_user:
+                    master_user.points += 50
+                    session.add(Transaction(
+                        user_id=master_user.id, 
+                        amount=50, 
+                        type=TransactionType.REFUND,
+                        description=f"Возврат баллов: заказ №{order_id} отменен клиентом"
+                    ))
+                    await session.commit()
+
             status_desc = "был в работе" if status == "accepted" else "был предложен"
             await callback.bot.send_message(
                 tid,
                 f"🗑️ <b>Заявка №{order_id} была удалена клиентом.</b>\n"
-                f"Ваш отклик {status_desc}, но теперь заказ больше не актуален.\n\n"
+                f"Ваш отклик {status_desc}.\n"
+                "💰 <b>50 баллов возвращены на ваш баланс.</b>\n\n"
                 "Вы по-прежнему можете откликаться на другие заказы!",
                 parse_mode="HTML"
             )
-        except Exception: pass
+        except Exception as e:
+            print(f"Error notifying/refunding master {tid}: {e}")
         
-    await callback.answer("Заказ отменен.")
+    await callback.answer("Заказ отменен. Баллы мастерам возвращены.")
 
 @router.callback_query(F.data.startswith("start_review:"))
 async def start_review_callback(callback: CallbackQuery):

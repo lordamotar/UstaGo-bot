@@ -27,6 +27,7 @@ class TransactionType(enum.Enum):
     RATING_BONUS = "RATING_BONUS"
     WITHDRAWAL = "WITHDRAWAL"
     ADMIN_ADJUSTMENT = "ADMIN_ADJUSTMENT"
+    REFUND = "REFUND"
 
 # Association table for Master - Category subscriptions
 master_category_subscriptions = Table(
