@@ -376,9 +376,17 @@ async def show_broadcast_preview(message: Message, state: FSMContext):
     text, photo = data['text'], data['photo']
     await state.set_state(BroadcastStates.confirming)
     
-    preview_text = f"📝 <b>Предпросмотр рассылки:</b>\n\n{text}"
+    preview_text = (
+        f"📝 <b>Предпросмотр рассылки:</b>\n\n{text}\n\n"
+        f"👥 <b>Выберите аудиторию:</b>"
+    )
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Запустить рассылку", callback_data="confirm_broadcast")],
+        [
+            InlineKeyboardButton(text="👷 Только мастерам", callback_data="broadcast_to:master"),
+            InlineKeyboardButton(text="👤 Только клиентам", callback_data="broadcast_to:client")
+        ],
+        [InlineKeyboardButton(text="🌍 Всем пользователям", callback_data="broadcast_to:all")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_broadcast")]
     ])
     
@@ -387,17 +395,33 @@ async def show_broadcast_preview(message: Message, state: FSMContext):
     else:
         await message.answer(preview_text, parse_mode="HTML", reply_markup=kb)
 
-@router.callback_query(BroadcastStates.confirming, F.data == "confirm_broadcast")
+@router.callback_query(BroadcastStates.confirming, F.data.startswith("broadcast_to:"))
 async def execute_broadcast(callback: CallbackQuery, state: FSMContext):
+    audience = callback.data.split(":")[1]
     data = await state.get_data()
     text, photo = data['text'], data['photo']
+    
     if callback.message.photo:
-        await callback.message.edit_caption(caption="⏳ Рассылка запущена... Это может занять некоторое время.")
+        await callback.message.edit_caption(caption="⏳ Рассылка запускается...")
     else:
-        await callback.message.edit_text("⏳ Рассылка запущена... Это может занять некоторое время.")
+        await callback.message.edit_text("⏳ Рассылка запускается...")
     
     async with async_session_maker() as session:
-        users = (await session.execute(select(User.telegram_id))).scalars().all()
+        if audience == "all":
+            stmt = select(User.telegram_id)
+        elif audience == "master":
+            stmt = select(User.telegram_id).where(User.role == UserRole.MASTER)
+        else: # client
+            stmt = select(User.telegram_id).where(User.role == UserRole.CLIENT)
+            
+        users = (await session.execute(stmt)).scalars().all()
+    
+    if not users:
+        await callback.message.answer("❌ В выбранной группе нет пользователей.")
+        await state.clear()
+        return
+
+    await callback.message.answer(f"🚀 Запущена рассылка на {len(users)} чел.")
     
     count = 0
     for uid in users:
