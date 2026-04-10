@@ -48,7 +48,7 @@ export default function OrdersPage() {
     }
   };
 
-  const getStatusColor = (status: str) => {
+  const getStatusColor = (status: string) => {
     switch (status) {
       case 'NEW': return 'bg-blue-500/10 text-blue-500';
       case 'ACTIVE': return 'bg-yellow-500/10 text-yellow-500';
