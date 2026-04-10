@@ -1,19 +1,18 @@
-# 🚀 Инструкция по деплою (UstaGo Bot)
+# 🚀 Инструкция по деплою (UstaGo)
 
 Это руководство поможет вам развернуть проект на Linux-сервере (Ubuntu/Debian) для постоянной работы.
 
 ## 📋 Предварительные требования
 
 1. **VPS Сервер**: любая ОС семейства Linux (рекомендуется Ubuntu 22.04+).
-2. **PostgreSQL**: база данных должна быть установлена и настроена.
-3. **Python 3.10+**: можно использовать системный, но рекомендуется через `uv`.
-4. **Бот**: токен от @BotFather.
+2. **Установленные инструменты**: `git`, `curl`, `node`, `npm`.
+3. **Python 3.10+**: рекомендуется использовать через менеджер `uv`.
 
 ---
 
-## ⚡️ Быстрый деплой (Рекомендуется)
+## ⚡️ Быстрый запуск (Первая установка)
 
-Если вы на чистом сервере Ubuntu/Debian, просто запустите этот скрипт. Он установит все зависимости, настроит базу данных и создаст системный сервис.
+Если вы на чистом сервере, запустите скрипт настройки. Он установит зависимости, настроит базу данных и создаст системные службы.
 
 ```bash
 chmod +x scripts/setup.sh
@@ -22,144 +21,58 @@ chmod +x scripts/setup.sh
 
 ---
 
-## 🛠️ Шаг 1: Подготовка сервера (Вручную)
+## 🔄 Обновление проекта (Без "танцев с бубнами")
 
-Обновите пакеты и установите зависимости:
+После внесения изменений в код (или `git push` из локальной среды), просто запустите:
+
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y git curl build-essential postgresql postgresql-contrib
+./deploy.sh
 ```
 
-Установите менеджер пакетов `uv` (самый быстрый способ управления Python):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env
-```
+**Что делает этот скрипт:**
+1.  Скачивает последние изменения (`git pull`).
+2.  Обновляет Python-зависимости (`uv sync`).
+3.  Собирает Frontend (`next build`). **Важно:** Если в коде ошибка (например, TypeScript), скрипт остановится и НЕ будет ломать работающую версию.
+4.  Перезапускает Backend API и Frontend через **PM2**.
+5.  Перезапускает Бота через **systemd**.
 
 ---
 
-## 🐘 Шаг 2: Настройка базы данных
+## 🛠️ Архитектура запуска
 
-Войдите под пользователем `postgres` и создайте пользователя проекта:
-```bash
-sudo -u postgres psql
-```
+Проект состоит из трех частей, которые работают независимо:
 
-В консоли `psql` выполните:
-```sql
-CREATE DATABASE ustago_db;
-CREATE USER ustago_admin WITH PASSWORD 'vash_slozhniy_parol';
-GRANT ALL PRIVILEGES ON DATABASE ustago_db TO ustago_admin;
-ALTER DATABASE ustago_db OWNER TO ustago_admin;
-\q
-```
+1.  **Telegram Бот**: Управляется через `systemd` (сервис `ustago`).
+    *   Логи: `sudo journalctl -u ustago -f`
+    *   Статус: `sudo systemctl status ustago`
+2.  **Admin API (FastAPI)**: Управляется через `PM2` (имя `ustago-backend`).
+    *   Логи: `pm2 logs ustago-backend`
+3.  **Admin Frontend (Next.js)**: Управляется через `PM2` (имя `ustago-frontend`).
+    *   Логи: `pm2 logs ustago-frontend`
 
 ---
 
-## 📦 Шаг 3: Развертывание кода
+## 🔍 Решение частых проблем
 
-Клонируйте проект в рабочую директорию (например, `/var/www` или вашу домашнюю):
+### ❌ Ошибка сборки Frontend (`npm run build` failed)
+**Симптом:** Скрипт деплоя пишет "Ошибка сборки фронтенда".
+**Причина:** Чаще всего это ошибки TypeScript в файлах `.tsx`.
+**Решение:** 
+1. Проверьте логи в терминале. Найдите строку с `Type error`.
+2. Самая частая ошибка: `(status: str)` вместо `(status: string)`.
+3. Исправьте ошибку, закоммитьте и запустите `./deploy.sh` снова.
+
+### ❓ PM2 не находит папку `.next`
+**Причина:** PM2 запускается из корневой папки, а Next.js ищет билд внутри `admin_frontend`.
+**Решение:** В новом скрипте `deploy.sh` эта проблема решена за счет использования флага `--cwd`. Если вы запускаете вручную, делайте это так:
+`pm2 start npm --name "ustago-frontend" --cwd "$(pwd)/admin_frontend" -- start`
+
+### 🔒 Порт 3000 не открывается в браузере
+**Решение:** Убедитесь, что порт разрешен в фаерволе:
 ```bash
-git clone https://github.com/lordamotar/UstaGo-bot.git
-cd UstaGo-bot
-```
-
-Создайте файл окружения `.env`:
-```bash
-nano .env
-```
-
-Вставьте в него свои данные (замените примеры на свои):
-```env
-BOT_TOKEN=8763135642:AAE...ващ_токен
-ADMIN_IDS=312082048,12345678
-
-# Настройки базы данных (DATABASE_URL + отдельные поля для надежности)
-DATABASE_URL=postgresql+asyncpg://ustago_admin:vash_pass@localhost:5432/ustago_db
-DB_USER=ustago_admin
-DB_NAME=ustago_db
-DB_PASS=vash_pass
-DB_HOST=localhost
-DB_PORT=5432
+sudo ufw allow 3000/tcp
+sudo ufw allow 8000/tcp
 ```
 
 ---
-
-## 🚀 Шаг 4: Установка и запуск
-
-Синхронизируйте зависимости и создайте виртуальное окружение через `uv`:
-```bash
-uv sync
-```
-
-**Инициализация базы данных (первый запуск):**
-Настройте таблицы и первичные данные (категории, районы):
-```bash
-uv run python reset_db.py
-```
-
----
-
-## ⚙️ Шаг 5: Автозапуск через Systemd
-
-Создайте конфиг сервиса, чтобы бот работал в фоне и перезапускался сам:
-```bash
-sudo nano /etc/systemd/system/ustago.service
-```
-
-Текст для файла (замените `ubuntu` на ваше имя пользователя в Linux):
-```ini
-[Unit]
-Description=UstaGo Telegram Bot Service
-After=network.target postgresql.service
-
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/UstaGo-bot
-# Запуск напрямую через Python из виртуального окружения
-ExecStart=/home/ubuntu/UstaGo-bot/.venv/bin/python main.py
-Restart=always
-RestartSec=5
-EnvironmentFile=/home/ubuntu/UstaGo-bot/.env
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Запустите и включите сервис в автозагрузку:**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable ustago
-sudo systemctl start ustago
-```
-
----
-
-## 🔄 Обновление бота
-
-Чтобы подтянуть последние изменения из Git и перезапустить бота:
-```bash
-chmod +x scripts/update.sh
-./scripts/update.sh
-```
-
----
-
-## 🔍 Полезные команды
-
-- **Проверка логов в реальном времени:**
-  ```bash
-  sudo journalctl -u ustago -f
-  ```
-- **Перезагрузка бота:**
-  ```bash
-  sudo systemctl restart ustago
-  ```
-- **Остановка:**
-  ```bash
-  sudo systemctl stop ustago
-  ```
-
----
-
-*Создано для команды UstaGo. По всем вопросам — в профиль администратора.*
+*UstaGo - Система управления мастерами и заказами.*
