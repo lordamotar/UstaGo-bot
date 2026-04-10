@@ -1,17 +1,29 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 def get_inline_categories(categories: list) -> InlineKeyboardMarkup:
-    """Inline keyboard for client selecting a category."""
+    """Inline keyboard for client selecting a category in 2 columns."""
     keyboard = []
+    row = []
     for cat in categories:
-        keyboard.append([InlineKeyboardButton(text=cat.name, callback_data=f"sel_cat:{cat.id}")])
+        row.append(InlineKeyboardButton(text=cat.name, callback_data=f"sel_cat:{cat.id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_inline_districts(districts: list) -> InlineKeyboardMarkup:
-    """Inline keyboard for selecting a district."""
+    """Inline keyboard for selecting a district in 2 columns."""
     keyboard = []
+    row = []
     for d in districts:
-        keyboard.append([InlineKeyboardButton(text=d.name, callback_data=f"sel_dist:{d.id}")])
+        row.append(InlineKeyboardButton(text=d.name, callback_data=f"sel_dist:{d.id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_order_confirmation_keyboard() -> InlineKeyboardMarkup:

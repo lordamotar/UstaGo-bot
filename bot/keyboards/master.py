@@ -1,16 +1,17 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 def build_districts_keyboard(selected_names: list, all_districts: list) -> InlineKeyboardMarkup:
-    """Builds the multi-select district keyboard."""
+    """Builds the multi-select district keyboard in 2 columns."""
     keyboard = []
+    row = []
     for dist_name in all_districts:
         icon = "✅ " if dist_name in selected_names else ""
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{icon}{dist_name}",
-                callback_data=f"dist_toggle:{dist_name}"
-            )
-        ])
+        row.append(InlineKeyboardButton(text=f"{icon}{dist_name}", callback_data=f"dist_toggle:{dist_name}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
     
     keyboard.append([InlineKeyboardButton(text="💾 Сохранить", callback_data="dist_save")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

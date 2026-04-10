@@ -33,12 +33,17 @@ def get_topup_review_keyboard(request_id: int) -> InlineKeyboardMarkup:
     ])
 
 def get_list_management_keyboard(items: list, prefix: str) -> InlineKeyboardMarkup:
-    """Builds a keyboard for lists like categories or districts with delete buttons."""
+    """Builds a keyboard for lists like categories or districts with delete buttons in 2 columns."""
     keyboard = []
-    for item in items:
-        keyboard.append([
-            InlineKeyboardButton(text=f"🗑️ {item.name}", callback_data=f"{prefix}_del:{item.id}")
-        ])
+    row = []
+    for i, item in enumerate(items):
+        row.append(InlineKeyboardButton(text=f"🗑️ {item.name}", callback_data=f"{prefix}_del:{item.id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+        
     keyboard.append([InlineKeyboardButton(text=f"➕ Добавить", callback_data=f"{prefix}_add")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

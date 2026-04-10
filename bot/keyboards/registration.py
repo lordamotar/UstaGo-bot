@@ -17,18 +17,19 @@ def get_role_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         one_time_keyboard=True
     )
 
-def build_categories_keyboard(selected_ids: set, mock_categories: list) -> InlineKeyboardMarkup:
-    """Builds the multi-select category keyboard."""
+def build_categories_keyboard(selected_ids: set, categories: list) -> InlineKeyboardMarkup:
+    """Builds the multi-select category keyboard in 2 columns."""
     keyboard = []
-    for cat in mock_categories:
+    row = []
+    for cat in categories:
         icon = "✅ " if cat["id"] in selected_ids else ""
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{icon}{cat['name']}",
-                callback_data=f"cat_toggle:{cat['id']}"
-            )
-        ])
-    
+        row.append(InlineKeyboardButton(text=f"{icon}{cat['name']}", callback_data=f"cat_toggle:{cat['id']}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+        
     keyboard.append([InlineKeyboardButton(text="💾 Сохранить и продолжить", callback_data="cat_save")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
