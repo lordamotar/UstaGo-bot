@@ -14,6 +14,7 @@ from bot.handlers.client_order import router as client_order_router
 from bot.handlers.client_cabinet import router as client_cabinet_router
 from bot.handlers.support import router as support_router
 from bot.handlers.payments import router as payments_router
+from bot.handlers.faq import router as faq_router
 # Middlewares
 from bot.middlewares.logging import LoggingMiddleware
 from bot.middlewares.ban_check import BanCheckMiddleware
@@ -82,6 +83,7 @@ async def main():
     dp.include_router(registration_router)
     dp.include_router(support_router)
     dp.include_router(payments_router)
+    dp.include_router(faq_router)
     dp.include_router(start_router)
 
     # Start background tasks

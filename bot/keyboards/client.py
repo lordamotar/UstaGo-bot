@@ -39,7 +39,7 @@ def get_client_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="➕ Создать заявку")],
         [KeyboardButton(text="⏳ Мои заявки")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="📩 Обратная связь")],
-        [KeyboardButton(text="🔨 Стать мастером")]
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="🔨 Стать мастером")]
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text="👨‍✈️ Админ-панель")])
