@@ -213,6 +213,8 @@ class SystemSettings(Base):
     crypto_address: Mapped[Optional[str]] = mapped_column(String(255))
     bank_enabled: Mapped[bool] = mapped_column(default=False)
     bank_details: Mapped[Optional[str]] = mapped_column(Text)
+    free_orders_enabled: Mapped[bool] = mapped_column(default=False)
+
 
 class TopUpRequest(Base):
     __tablename__ = "topup_requests"

@@ -10,13 +10,17 @@ import {
   CheckCircle,
   XCircle,
   Check,
-  X
+  X,
+  Settings,
+  Zap,
+  ZapOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export default function FinancesPage() {
   const [topups, setTopups] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [settings, setSettings] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'topups' | 'transactions'>('topups');
   const router = useRouter();
@@ -24,12 +28,14 @@ export default function FinancesPage() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [topupsRes, txsRes] = await Promise.all([
+      const [topupsRes, txsRes, settingsRes] = await Promise.all([
         api.get('/topups'),
-        api.get('/transactions?limit=20')
+        api.get('/transactions?limit=20'),
+        api.get('/settings')
       ]);
       setTopups(topupsRes.data);
       setTransactions(txsRes.data);
+      setSettings(settingsRes.data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -50,14 +56,50 @@ export default function FinancesPage() {
     }
   };
 
+  const toggleFreeOrders = async () => {
+    if (!settings) return;
+    try {
+      const newValue = !settings.free_orders_enabled;
+      await api.patch('/settings', { free_orders_enabled: newValue });
+      setSettings({ ...settings, free_orders_enabled: newValue });
+    } catch (err) {
+      alert('Ошибка при обновлении настроек');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background p-6 lg:p-10">
-      <div className="flex items-center gap-4 mb-8">
-        <button onClick={() => router.push('/')} className="p-2 hover:bg-secondary rounded-full transition-colors">
-          <ArrowLeft className="w-6 h-6" />
-        </button>
-        <h1 className="text-3xl font-bold">Управление финансами</h1>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+        <div className="flex items-center gap-4">
+          <button onClick={() => router.push('/')} className="p-2 hover:bg-secondary rounded-full transition-colors">
+            <ArrowLeft className="w-6 h-6" />
+          </button>
+          <h1 className="text-3xl font-bold">Управление финансами</h1>
+        </div>
+
+        {settings && (
+          <div className="bg-secondary/50 p-1.5 rounded-2xl flex items-center border border-border">
+            <div className="flex items-center gap-3 px-4 py-2 bg-background/50 rounded-xl border border-border/50 shadow-sm">
+              <div className={`p-2 rounded-lg ${settings.free_orders_enabled ? 'bg-green-500/20 text-green-500' : 'bg-primary/20 text-primary'}`}>
+                {settings.free_orders_enabled ? <Zap className="w-5 h-5" /> : <ZapOff className="w-5 h-5" />}
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Платные заказы</span>
+                <span className="text-sm font-bold">
+                  {settings.free_orders_enabled ? 'Баллы НЕ списываются' : 'Баллы списываются (50 баллов)'}
+                </span>
+              </div>
+              <button 
+                onClick={toggleFreeOrders}
+                className={`ml-4 w-12 h-6 rounded-full p-1 transition-colors duration-300 relative ${settings.free_orders_enabled ? 'bg-green-500' : 'bg-muted'}`}
+              >
+                <div className={`w-4 h-4 bg-white rounded-full transition-transform duration-300 ${settings.free_orders_enabled ? 'translate-x-6' : 'translate-x-0'}`} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
 
       <div className="flex gap-4 mb-8">
         <button 

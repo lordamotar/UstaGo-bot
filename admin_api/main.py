@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Body
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid
+from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -226,7 +226,42 @@ class NameUpdate(BaseModel):
 class TopUpReview(BaseModel):
     status: str # APPROVED or REJECTED
 
+class SystemSettingsUpdate(BaseModel):
+    crypto_enabled: Optional[bool] = None
+    crypto_address: Optional[str] = None
+    bank_enabled: Optional[bool] = None
+    bank_details: Optional[str] = None
+    free_orders_enabled: Optional[bool] = None
+
 # --- ENDPOINTS ---
+
+@app.get("/api/v1/settings", dependencies=[Depends(verify_api_key)])
+async def get_settings():
+    async with async_session_maker() as session:
+        settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
+        if not settings:
+            settings = SystemSettings()
+            session.add(settings)
+            await session.commit()
+            await session.refresh(settings)
+        return settings
+
+@app.patch("/api/v1/settings", dependencies=[Depends(verify_api_key)])
+async def update_settings(data: SystemSettingsUpdate):
+    async with async_session_maker() as session:
+        settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
+        if not settings:
+            settings = SystemSettings()
+            session.add(settings)
+            
+        if data.crypto_enabled is not None: settings.crypto_enabled = data.crypto_enabled
+        if data.crypto_address is not None: settings.crypto_address = data.crypto_address
+        if data.bank_enabled is not None: settings.bank_enabled = data.bank_enabled
+        if data.bank_details is not None: settings.bank_details = data.bank_details
+        if data.free_orders_enabled is not None: settings.free_orders_enabled = data.free_orders_enabled
+        
+        await session.commit()
+        return {"status": "success"}
 
 @app.get("/api/v1/users", dependencies=[Depends(verify_api_key)])
 async def list_users(role: Optional[UserRole] = None):

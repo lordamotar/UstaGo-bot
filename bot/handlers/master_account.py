@@ -382,8 +382,11 @@ async def master_view_order_callback(callback: CallbackQuery):
 async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
     order_id = int(callback.data.split(":")[1])
     async with async_session_maker() as session:
+        settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
+        free_orders = settings.free_orders_enabled if settings else False
+        
         user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalar_one_or_none()
-        if not user or user.points < 50:
+        if not free_orders and (not user or user.points < 50):
             await callback.answer("❌ Недостаточно баллов (нужно 50).", show_alert=True)
             return
     await state.update_data(bid_order_id=order_id)
@@ -402,9 +405,14 @@ async def process_bid_message(message: Message, state: FSMContext):
     data = await state.get_data()
     order_id, price_str = data['bid_order_id'], data['bid_price']
     async with async_session_maker() as session:
+        settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
+        free_orders = settings.free_orders_enabled if settings else False
+        
         user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id))).scalar()
-        user.points -= 50
-        session.add(Transaction(user_id=user.id, amount=-50, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}"))
+        
+        if not free_orders:
+            user.points -= 50
+            session.add(Transaction(user_id=user.id, amount=-50, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}"))
         import re
         price_val = int("".join(re.findall(r'\d+', price_str))) if re.findall(r'\d+', price_str) else 0
         bid = Bid(order_id=order_id, master_id=user.master_profile.id, suggested_price=price_val, message=message.text)
