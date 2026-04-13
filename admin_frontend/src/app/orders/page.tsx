@@ -13,9 +13,13 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Pagination from '@/components/Pagination';
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const limit = 20;
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -26,8 +30,14 @@ export default function OrdersPage() {
   const fetchOrders = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/orders');
-      setOrders(response.data);
+      const params = {
+        skip: skip,
+        limit: limit,
+        status: statusFilter !== 'ALL' ? statusFilter : undefined
+      };
+      const response = await api.get('/orders', { params });
+      setOrders(response.data.items);
+      setTotal(response.data.total);
     } catch (err) {
       console.error(err);
     } finally {
@@ -37,7 +47,12 @@ export default function OrdersPage() {
 
   useEffect(() => {
     fetchOrders();
-  }, []);
+  }, [skip, statusFilter]);
+
+  // Reset pagination when filter changes
+  useEffect(() => {
+    setSkip(0);
+  }, [statusFilter]);
 
   const fetchOrderDetails = async (id: number) => {
     try {
@@ -182,6 +197,12 @@ export default function OrdersPage() {
             </div>
           )}
         </div>
+        <Pagination 
+          total={total} 
+          limit={limit} 
+          skip={skip} 
+          onPageChange={setSkip} 
+        />
       </div>
 
       {/* Modal - Order Details */}

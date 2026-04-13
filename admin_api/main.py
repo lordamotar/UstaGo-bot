@@ -11,8 +11,17 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from bot.core.config import config
+from aiogram import Bot
 
 app = FastAPI(title="UstaGo Admin API")
+bot_instance = Bot(token=config.BOT_TOKEN)
+
+async def notify_user(telegram_id: int, message: str):
+    """Sends a notification to the user via Telegram bot."""
+    try:
+        await bot_instance.send_message(telegram_id, message, parse_mode="HTML")
+    except Exception as e:
+        print(f"Failed to notify user {telegram_id}: {e}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -233,6 +242,12 @@ class SystemSettingsUpdate(BaseModel):
     bank_details: Optional[str] = None
     free_orders_enabled: Optional[bool] = None
 
+class BulkPointAdjustment(BaseModel):
+    master_ids: Optional[List[int]] = None
+    all_masters: bool = False
+    amount: int
+    description: str
+
 # --- ENDPOINTS ---
 
 @app.get("/api/v1/settings", dependencies=[Depends(verify_api_key)])
@@ -264,9 +279,16 @@ async def update_settings(data: SystemSettingsUpdate):
         return {"status": "success"}
 
 @app.get("/api/v1/users", dependencies=[Depends(verify_api_key)])
-async def list_users(role: Optional[UserRole] = None):
-    """Returns a list of all users with detailed stats."""
+async def list_users(role: Optional[UserRole] = None, skip: int = 0, limit: int = 50):
+    """Returns a list of all users with detailed stats supporting pagination."""
     async with async_session_maker() as session:
+        # Total count
+        count_stmt = select(func.count(User.id))
+        if role:
+            count_stmt = count_stmt.where(User.role == role)
+        total = (await session.execute(count_stmt)).scalar() or 0
+
+        # Items
         stmt = select(User).options(
             selectinload(User.master_profile).selectinload(MasterProfile.categories),
             selectinload(User.master_profile).selectinload(MasterProfile.bids).selectinload(Bid.order),
@@ -274,17 +296,17 @@ async def list_users(role: Optional[UserRole] = None):
         )
         if role:
             stmt = stmt.where(User.role == role)
+        
+        stmt = stmt.order_by(User.created_at.desc()).offset(skip).limit(limit)
             
         users = (await session.execute(stmt)).scalars().all()
         
-        result = []
+        items = []
         for u in users:
             client_orders_count = len(u.orders_created)
             
             master_data = None
             if u.master_profile:
-                # В UstaGo статус обработанного заказа обычно 'ACCEPTED' (или 'COMPLETED' для самого заказа)
-                # Давайте просто посчитаем кол-во заявок (bids) и сколько из них 'ACCEPTED'
                 total_bids = len(u.master_profile.bids)
                 accepted_bids = sum(1 for b in u.master_profile.bids if b.status == 'ACCEPTED')
                 
@@ -299,7 +321,7 @@ async def list_users(role: Optional[UserRole] = None):
                     "is_accredited": u.master_profile.is_accredited
                 }
             
-            result.append({
+            items.append({
                 "id": u.id,
                 "role": u.role,
                 "full_name": u.full_name,
@@ -310,7 +332,7 @@ async def list_users(role: Optional[UserRole] = None):
                 "master_data": master_data,
                 "created_at": u.created_at
             })
-        return result
+        return {"total": total, "items": items}
 
 @app.get("/api/v1/masters", dependencies=[Depends(verify_api_key)])
 async def list_masters(status: Optional[MasterStatus] = None):
@@ -408,16 +430,25 @@ async def adjust_master_points(master_id: int, data: PointAdjustment):
 # --- ORDERS ---
 
 @app.get("/api/v1/orders", dependencies=[Depends(verify_api_key)])
-async def list_orders(status: Optional[OrderStatus] = None):
-    """Returns a list of orders."""
+async def list_orders(status: Optional[OrderStatus] = None, skip: int = 0, limit: int = 50):
+    """Returns a list of orders supporting pagination."""
     async with async_session_maker() as session:
+        # Total count
+        count_stmt = select(func.count(Order.id))
+        if status:
+            count_stmt = count_stmt.where(Order.status == status)
+        total = (await session.execute(count_stmt)).scalar() or 0
+
+        # Items
         stmt = select(Order).options(selectinload(Order.category), selectinload(Order.district))
         if status:
             stmt = stmt.where(Order.status == status)
         
+        stmt = stmt.order_by(Order.created_at.desc()).offset(skip).limit(limit)
+        
         orders = (await session.execute(stmt)).scalars().all()
         
-        return [{
+        items = [{
             "id": o.id,
             "client_id": o.client_id,
             "category": o.category.name,
@@ -426,6 +457,8 @@ async def list_orders(status: Optional[OrderStatus] = None):
             "budget": o.budget,
             "created_at": o.created_at
         } for o in orders]
+        
+        return {"total": total, "items": items}
 
 @app.get("/api/v1/orders/{order_id}", dependencies=[Depends(verify_api_key)])
 async def get_order_details(order_id: int):
@@ -536,18 +569,39 @@ async def review_topup(request_id: int, data: TopUpReview):
                 type=TransactionType.REFUND, # Positive adjustment
                 description=f"Пополнение баланса через {req.method} (Admin API)"
             ))
+            # Notification
+            await notify_user(
+                user.telegram_id, 
+                f"✅ <b>Баланс пополнен!</b>\n\nСумма: <b>{req.amount} ₸</b>\nСпособ: {req.method}\nВаш текущий баланс: <b>{user.points} ₸</b>"
+            )
         else:
             req.status = "REJECTED"
+            await notify_user(
+                user.telegram_id, 
+                f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\nЕсли у вас есть вопросы, обратитесь в поддержку."
+            )
             
         await session.commit()
         return {"status": "success"}
 
 @app.get("/api/v1/transactions", dependencies=[Depends(verify_api_key)])
-async def list_transactions(limit: int = 50):
+async def list_transactions(skip: int = 0, limit: int = 50):
+    """Returns transactions with pagination."""
     async with async_session_maker() as session:
-        stmt = select(Transaction).options(selectinload(Transaction.user)).order_by(Transaction.created_at.desc()).limit(limit)
+        # Total count
+        total = (await session.execute(select(func.count(Transaction.id)))).scalar() or 0
+
+        # Items
+        stmt = (
+            select(Transaction)
+            .options(selectinload(Transaction.user))
+            .order_by(Transaction.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
         txs = (await session.execute(stmt)).scalars().all()
-        return [{
+        
+        items = [{
             "id": t.id,
             "user": t.user.full_name,
             "amount": t.amount,
@@ -555,3 +609,36 @@ async def list_transactions(limit: int = 50):
             "description": t.description,
             "date": t.created_at
         } for t in txs]
+        
+        return {"total": total, "items": items}
+
+@app.post("/api/v1/finance/bulk-adjust-points", dependencies=[Depends(verify_api_key)])
+async def bulk_adjust_points(data: BulkPointAdjustment):
+    """Adjust points for multiple masters or all of them."""
+    async with async_session_maker() as session:
+        if data.all_masters:
+            # Get all users who have a master profile
+            stmt = select(User).join(MasterProfile)
+            users = (await session.execute(stmt)).scalars().all()
+        elif data.master_ids:
+            stmt = select(User).join(MasterProfile).where(MasterProfile.id.in_(data.master_ids))
+            users = (await session.execute(stmt)).scalars().all()
+        else:
+            raise HTTPException(status_code=400, detail="No masters specified")
+            
+        for user in users:
+            user.points += data.amount
+            session.add(Transaction(
+                user_id=user.id,
+                amount=data.amount,
+                type=TransactionType.ADMIN_ADJUSTMENT,
+                description=data.description
+            ))
+            # Notification
+            await notify_user(
+                user.telegram_id,
+                f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\nВаш текущий баланс: <b>{user.points} ₸</b>"
+            )
+            
+        await session.commit()
+        return {"status": "success", "count": len(users)}

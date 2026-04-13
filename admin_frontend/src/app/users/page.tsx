@@ -17,9 +17,13 @@ import {
   Briefcase
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Pagination from '@/components/Pagination';
 
 export default function UsersPage() {
   const [users, setUsers] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const limit = 20;
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('ALL');
@@ -30,8 +34,15 @@ export default function UsersPage() {
 
   const fetchUsers = async () => {
     try {
-      const response = await api.get('/users');
-      setUsers(response.data);
+      setLoading(true);
+      const params = {
+        skip: skip,
+        limit: limit,
+        role: roleFilter !== 'ALL' ? roleFilter : undefined
+      };
+      const response = await api.get('/users', { params });
+      setUsers(response.data.items);
+      setTotal(response.data.total);
     } catch (err) {
       console.error(err);
     } finally {
@@ -41,7 +52,12 @@ export default function UsersPage() {
 
   useEffect(() => {
     fetchUsers();
-  }, []);
+  }, [skip, roleFilter]); // Refetch when page or role filter changes
+
+  // Reset pagination when filter changes
+  useEffect(() => {
+    setSkip(0);
+  }, [roleFilter]);
 
   const handleStatusUpdate = async (masterId: number, status: string) => {
     try {
@@ -198,6 +214,12 @@ export default function UsersPage() {
             </div>
           )}
         </div>
+        <Pagination 
+          total={total} 
+          limit={limit} 
+          skip={skip} 
+          onPageChange={setSkip} 
+        />
       </div>
 
       {/* Modal - User Details & Stats */}

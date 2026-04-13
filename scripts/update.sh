@@ -33,8 +33,16 @@ else
     source .venv/bin/activate && pip install -r requirements.txt
 fi
 
-# 3. Сборка фронтенда
-echo -e "${YELLOW}🏗️ 3. Сборка Frontend (Next.js)...${NC}"
+# 3. Применение миграций базы данных
+echo -e "${YELLOW}🏗️ 3. Обновление структуры базы данных (Alembic)...${NC}"
+if command -v uv &> /dev/null; then
+    uv run alembic upgrade head || { echo -e "${RED}❌ Ошибка миграции!${NC}"; exit 1; }
+else
+    source .venv/bin/activate && alembic upgrade head || { echo -e "${RED}❌ Ошибка миграции!${NC}"; exit 1; }
+fi
+
+# 4. Сборка фронтенда
+echo -e "${YELLOW}🏗️ 4. Сборка Frontend (Next.js)...${NC}"
 if [ -d "admin_frontend" ]; then
     cd admin_frontend || exit 1
     npm install --no-audit --no-fund
@@ -42,21 +50,25 @@ if [ -d "admin_frontend" ]; then
     cd ..
 fi
 
-# 4. Перезапуск серверных процессов (PM2)
-echo -e "${YELLOW}🚀 4. Перезапуск веб-сервисов (PM2)...${NC}"
+# 5. Перезапуск серверных процессов (PM2)
+echo -e "${YELLOW}🚀 5. Перезапуск веб-сервисов (PM2)...${NC}"
 if command -v pm2 &> /dev/null; then
+    # Backend
     pm2 restart ustago-backend 2>/dev/null || pm2 start "uv run uvicorn admin_api.main:app --host 0.0.0.0 --port 8000" --name "ustago-backend"
-    pm2 restart ustago-frontend 2>/dev/null || pm2 start npm --name "ustago-frontend" --cwd "$(pwd)/admin_frontend" -- start
+    
+    # Frontend
+    pm2 restart ustago-frontend 2>/dev/null || pm2 start "npm run start" --name "ustago-frontend" --cwd "$(pwd)/admin_frontend"
+    
     pm2 save
 fi
 
-# 5. Перезапуск Бота (Systemd)
-echo -e "${YELLOW}🤖 5. Перезапуск Telegram Бота...${NC}"
-if systemctl is-active --quiet ustago; then
+# 6. Перезапуск Бота (Systemd)
+echo -e "${YELLOW}🤖 6. Перезапуск Telegram Бота...${NC}"
+if systemctl list-unit-files | grep -q ustago.service; then
     sudo systemctl restart ustago
     echo -e "${GREEN}✅ Бот перезапущен.${NC}"
 else
-    echo -e "${YELLOW}⚠️ Сервис бота не запущен. Попробуйте: sudo systemctl start ustago${NC}"
+    echo -e "${YELLOW}⚠️ Сервис бота не найден (ustago.service). Пропускаю...${NC}"
 fi
 
 echo -e "${GREEN}==============================================${NC}"

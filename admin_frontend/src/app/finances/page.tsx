@@ -13,29 +13,60 @@ import {
   X,
   Settings,
   Zap,
-  ZapOff
+  ZapOff,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Pagination from '@/components/Pagination';
 
 export default function FinancesPage() {
   const [topups, setTopups] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [txTotal, setTxTotal] = useState(0);
+  const [txSkip, setTxSkip] = useState(0);
+  const txLimit = 20;
+
   const [settings, setSettings] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'topups' | 'transactions'>('topups');
+  
+  // Modal state
+  const [isAddPointsModalOpen, setIsAddPointsModalOpen] = useState(false);
+  const [masters, setMasters] = useState<any[]>([]);
+  const [searchMaster, setSearchMaster] = useState('');
+  const [selectedMasterIds, setSelectedMasterIds] = useState<number[]>([]);
+  const [allMasters, setAllMasters] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('Бонус от администрации');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const router = useRouter();
+
+  const fetchTransactions = async () => {
+    try {
+      const txsRes = await api.get(`/transactions?skip=${txSkip}&limit=${txLimit}`);
+      setTransactions(txsRes.data.items);
+      setTxTotal(txsRes.data.total);
+    } catch (err) { console.error(err); }
+  };
+
+  const fetchMasters = async () => {
+    try {
+      const res = await api.get('/users', { params: { role: 'MASTER', limit: 100 } });
+      setMasters(res.data.items);
+    } catch (err) { console.error(err); }
+  };
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [topupsRes, txsRes, settingsRes] = await Promise.all([
+      const [topupsRes, settingsRes] = await Promise.all([
         api.get('/topups'),
-        api.get('/transactions?limit=20'),
         api.get('/settings')
       ]);
       setTopups(topupsRes.data);
-      setTransactions(txsRes.data);
       setSettings(settingsRes.data);
+      await fetchTransactions();
     } catch (err) {
       console.error(err);
     } finally {
@@ -46,6 +77,12 @@ export default function FinancesPage() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'transactions') {
+      fetchTransactions();
+    }
+  }, [txSkip]);
 
   const handleTopupReview = async (id: number, status: string) => {
     try {
@@ -66,6 +103,44 @@ export default function FinancesPage() {
       alert('Ошибка при обновлении настроек');
     }
   };
+
+  const handleAddPoints = async () => {
+    if (!amount || (!allMasters && selectedMasterIds.length === 0)) {
+      alert('Заполните все поля');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      await api.post('/finance/bulk-adjust-points', {
+        master_ids: allMasters ? null : selectedMasterIds,
+        all_masters: allMasters,
+        amount: parseInt(amount),
+        description: reason
+      });
+      alert('Баллы успешно начислены');
+      setIsAddPointsModalOpen(false);
+      resetModal();
+      fetchData();
+    } catch (err) {
+      alert('Ошибка при начислении');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetModal = () => {
+    setSelectedMasterIds([]);
+    setAllMasters(false);
+    setAmount('');
+    setReason('Бонус от администрации');
+    setSearchMaster('');
+  };
+
+  const filteredMasters = masters.filter(m => 
+    m.full_name?.toLowerCase().includes(searchMaster.toLowerCase()) ||
+    m.phone?.includes(searchMaster)
+  );
 
   return (
     <div className="min-h-screen bg-background p-6 lg:p-10">
@@ -101,25 +176,35 @@ export default function FinancesPage() {
       </div>
 
 
-      <div className="flex gap-4 mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
+        <div className="flex gap-4">
+          <button 
+            onClick={() => setActiveTab('topups')}
+            className={`px-6 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'topups' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-secondary text-muted-foreground hover:bg-secondary/80'}`}
+          >
+            <CreditCard className="w-4 h-4" />
+            Заявки на пополнение
+            {topups.length > 0 && (
+              <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full ml-1">
+                {topups.length}
+              </span>
+            )}
+          </button>
+          <button 
+            onClick={() => setActiveTab('transactions')}
+            className={`px-6 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'transactions' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-secondary text-muted-foreground hover:bg-secondary/80'}`}
+          >
+            <History className="w-4 h-4" />
+            Сводка транзакций
+          </button>
+        </div>
+
         <button 
-          onClick={() => setActiveTab('topups')}
-          className={`px-6 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'topups' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-secondary text-muted-foreground hover:bg-secondary/80'}`}
+          onClick={() => { resetModal(); fetchMasters(); setIsAddPointsModalOpen(true); }}
+          className="px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-green-500/20 transition-all"
         >
           <CreditCard className="w-4 h-4" />
-          Заявки на пополнение
-          {topups.length > 0 && (
-            <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full ml-1">
-              {topups.length}
-            </span>
-          )}
-        </button>
-        <button 
-          onClick={() => setActiveTab('transactions')}
-          className={`px-6 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'transactions' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-secondary text-muted-foreground hover:bg-secondary/80'}`}
-        >
-          <History className="w-4 h-4" />
-          Сводка транзакций
+          Добавить баллы
         </button>
       </div>
 
@@ -240,8 +325,133 @@ export default function FinancesPage() {
               </div>
             )}
           </div>
+          {activeTab === 'transactions' && (
+            <Pagination 
+              total={txTotal} 
+              limit={txLimit} 
+              skip={txSkip} 
+              onPageChange={setTxSkip} 
+            />
+          )}
         </div>
       )}
+
+      {/* Add Points Modal */}
+      <AnimatePresence>
+        {isAddPointsModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-lg bg-popover text-popover-foreground rounded-2xl shadow-2xl border border-border overflow-hidden"
+            >
+              <div className="p-6 border-b border-border flex items-center justify-between">
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <CreditCard className="text-green-500" />
+                  Начислить баллы
+                </h2>
+                <button onClick={() => setIsAddPointsModalOpen(false)} className="p-2 hover:bg-secondary rounded-full">
+                  <X className="w-5 h-5 text-muted-foreground" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="flex items-center gap-2 mb-2">
+                   <input 
+                     type="checkbox" 
+                     id="all_masters" 
+                     checked={allMasters} 
+                     onChange={(e) => setAllMasters(e.target.checked)}
+                     className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                   />
+                   <label htmlFor="all_masters" className="text-sm font-bold cursor-pointer">
+                      Пополнить ВСЕМ мастерам
+                   </label>
+                </div>
+
+                {!allMasters && (
+                  <div>
+                    <label className="text-xs font-bold text-muted-foreground uppercase mb-1 block">Выберите мастера</label>
+                    <div className="relative mb-2">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <input 
+                        type="text" 
+                        placeholder="Поиск мастера..." 
+                        value={searchMaster}
+                        onChange={(e) => setSearchMaster(e.target.value)}
+                        className="w-full bg-secondary/50 border border-border rounded-xl py-2 pl-9 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary"
+                      />
+                    </div>
+                    <div className="max-h-[150px] overflow-y-auto border border-border rounded-xl bg-secondary/20 p-1 space-y-1">
+                      {filteredMasters.map(m => (
+                        <div 
+                          key={m.id} 
+                          onClick={() => {
+                            if (selectedMasterIds.includes(m.master_data.master_id)) {
+                              setSelectedMasterIds(selectedMasterIds.filter(id => id !== m.master_data.master_id));
+                            } else {
+                              setSelectedMasterIds([...selectedMasterIds, m.master_data.master_id]);
+                            }
+                          }}
+                          className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors ${
+                            selectedMasterIds.includes(m.master_data.master_id) ? 'bg-primary/20 text-primary' : 'hover:bg-secondary'
+                          }`}
+                        >
+                          <div className="text-xs">
+                             <p className="font-bold">{m.full_name}</p>
+                             <p className="text-muted-foreground">{m.phone}</p>
+                          </div>
+                          {selectedMasterIds.includes(m.master_data.master_id) && <Check className="w-4 h-4" />}
+                        </div>
+                      ))}
+                      {filteredMasters.length === 0 && <p className="p-4 text-center text-xs text-muted-foreground">Мастера не найдены</p>}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1">Выбрано: {selectedMasterIds.length}</p>
+                  </div>
+                )}
+
+                <div>
+                   <label className="text-xs font-bold text-muted-foreground uppercase mb-1 block">Сумма баллов</label>
+                   <input 
+                     type="number" 
+                     placeholder="Например: 500" 
+                     value={amount}
+                     onChange={(e) => setAmount(e.target.value)}
+                     className="w-full bg-secondary/50 border border-border rounded-xl py-2.5 px-4 text-sm font-bold outline-none focus:ring-2 focus:ring-primary"
+                   />
+                </div>
+
+                <div>
+                   <label className="text-xs font-bold text-muted-foreground uppercase mb-1 block">Комментарий</label>
+                   <input 
+                     type="text" 
+                     value={reason}
+                     onChange={(e) => setReason(e.target.value)}
+                     className="w-full bg-secondary/50 border border-border rounded-xl py-2.5 px-4 text-sm outline-none focus:ring-2 focus:ring-primary"
+                   />
+                </div>
+              </div>
+
+              <div className="p-6 bg-secondary/10 border-t border-border flex justify-end gap-3">
+                <button 
+                  onClick={() => setIsAddPointsModalOpen(false)}
+                  className="px-6 py-2 bg-secondary hover:bg-secondary/80 font-bold rounded-xl transition-all"
+                >
+                  Отмена
+                </button>
+                <button 
+                  onClick={handleAddPoints}
+                  disabled={isSubmitting}
+                  className="px-6 py-2 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white font-bold rounded-xl transition-all shadow-lg shadow-green-500/20"
+                >
+                  {isSubmitting ? 'Выполняется...' : 'Начислить'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
