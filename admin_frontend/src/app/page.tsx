@@ -14,7 +14,8 @@ import {
   CheckCircle2,
   CreditCard,
   MapPin,
-  Settings
+  Settings,
+  History
 } from 'lucide-react';
 import ChangePasswordModal from '@/components/ChangePasswordModal';
 import { 
@@ -185,6 +186,13 @@ export default function DashboardPage() {
           >
             <MapPin className="w-4 h-4" />
             Справочники
+          </button>
+          <button 
+            onClick={() => router.push('/logs')}
+            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
+          >
+            <History className="w-4 h-4" />
+            Логи
           </button>
           <button 
             onClick={() => setIsPasswordModalOpen(true)}

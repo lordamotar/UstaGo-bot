@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Body
 from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings
+from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings, AdminLog
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +22,10 @@ async def notify_user(telegram_id: int, message: str):
         await bot_instance.send_message(telegram_id, message, parse_mode="HTML")
     except Exception as e:
         print(f"Failed to notify user {telegram_id}: {e}")
+
+async def log_action(session, action: str, details: str, admin_id: Optional[int] = None):
+    """Utility to log administrative actions."""
+    session.add(AdminLog(action=action, details=details, admin_id=admin_id))
 
 app.add_middleware(
     CORSMiddleware,
@@ -364,6 +368,7 @@ async def update_settings(data: SystemSettingsUpdate):
         if data.bank_details is not None: settings.bank_details = data.bank_details
         if data.free_orders_enabled is not None: settings.free_orders_enabled = data.free_orders_enabled
         
+        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.json(exclude_none=True)}")
         await session.commit()
         return {"status": "success"}
 
@@ -703,6 +708,7 @@ async def review_topup(request_id: int, data: TopUpReview):
                 f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\nЕсли у вас есть вопросы, обратитесь в поддержку."
             )
             
+        await log_action(session, f"TOPUP_{data.status}", f"Request #{request_id} reviewed. User: {user.full_name}, Amount: {req.amount}")
         await session.commit()
         return {"status": "success"}
 
@@ -762,5 +768,15 @@ async def bulk_adjust_points(data: BulkPointAdjustment):
                 f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\nВаш текущий баланс: <b>{user.points} ₸</b>"
             )
             
+        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(users)}, Reason: {data.description}")
         await session.commit()
         return {"status": "success", "count": len(users)}
+
+@app.get("/api/v1/logs", dependencies=[Depends(verify_api_key)])
+async def list_admin_logs(skip: int = 0, limit: int = 50):
+    """Returns administrative logs with pagination."""
+    async with async_session_maker() as session:
+        total = (await session.execute(select(func.count(AdminLog.id)))).scalar() or 0
+        stmt = select(AdminLog).order_by(AdminLog.created_at.desc()).offset(skip).limit(limit)
+        logs = (await session.execute(stmt)).scalars().all()
+        return {"total": total, "items": logs}
