@@ -23,7 +23,7 @@ export default function UsersPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [skip, setSkip] = useState(0);
-  const limit = 20;
+  const [limit, setLimit] = useState(20);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('ALL');
@@ -100,8 +100,8 @@ export default function UsersPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col md:flex-row gap-4 mb-8">
-        <div className="relative flex-1">
+      <div className="flex flex-col md:flex-row gap-4 mb-8 items-center justify-between">
+        <div className="relative flex-1 w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
           <input 
             type="text" 
@@ -111,18 +111,36 @@ export default function UsersPage() {
             className="w-full bg-secondary/50 border border-border rounded-xl py-2.5 pl-10 pr-4 focus:ring-2 focus:ring-primary outline-none"
           />
         </div>
-        <div className="flex bg-secondary/50 p-1 rounded-xl border border-border">
-          {['ALL', 'CLIENT', 'MASTER'].map((r) => (
-            <button
-              key={r}
-              onClick={() => setRoleFilter(r)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                roleFilter === r ? 'bg-primary text-white shadow-lg' : 'hover:bg-background/50'
-              }`}
-            >
-              {r === 'ALL' ? 'Все' : r === 'CLIENT' ? 'Клиенты' : 'Мастера'}
-            </button>
-          ))}
+        
+        <div className="flex items-center gap-6">
+          <div className="flex bg-secondary/50 p-1 rounded-xl border border-border">
+            {['ALL', 'CLIENT', 'MASTER'].map((r) => (
+              <button
+                key={r}
+                onClick={() => { setRoleFilter(r); setSkip(0); }}
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                  roleFilter === r ? 'bg-primary text-white shadow-lg' : 'hover:bg-background/50'
+                }`}
+              >
+                {r === 'ALL' ? 'Все' : r === 'CLIENT' ? 'Клиенты' : 'Мастера'}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+             <span className="text-[10px] font-bold text-muted-foreground uppercase">Показывать по:</span>
+             <div className="flex bg-secondary/50 p-1 rounded-lg border border-border">
+               {[10, 20, 50, 100].map((val) => (
+                 <button
+                   key={val}
+                   onClick={() => { setLimit(val); setSkip(0); }}
+                   className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${limit === val ? 'bg-primary text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                 >
+                   {val}
+                 </button>
+               ))}
+             </div>
+          </div>
         </div>
       </div>
 
@@ -135,6 +153,7 @@ export default function UsersPage() {
                 <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Пользователь</th>
                 <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Роль</th>
                 <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Контакты</th>
+                <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Районы</th>
                 <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Инфо / Категория</th>
                 <th className="px-6 py-4 text-sm font-semibold text-muted-foreground text-right">Действия</th>
               </tr>
@@ -178,9 +197,18 @@ export default function UsersPage() {
                     </td>
                     <td className="px-6 py-4">
                       {u.role === 'MASTER' && u.master_data ? (
+                        <p className="text-sm truncate max-w-[150px]" title={u.master_data.districts?.join(', ')}>
+                           {u.master_data.districts?.join(', ') || '-'}
+                        </p>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {u.role === 'MASTER' && u.master_data ? (
                         <div>
                            <p className="text-sm font-bold text-primary truncate max-w-[200px]">
-                              {u.master_data.categories.join(', ') || 'Без категории'}
+                              {u.master_data.categories?.join(', ') || 'Без категории'}
                            </p>
                            <p className="text-xs text-muted-foreground truncate max-w-[200px]" title={u.master_data.description}>
                               {u.master_data.description || '-'}
@@ -265,7 +293,11 @@ export default function UsersPage() {
                     <h3 className="font-bold text-lg border-b border-border pb-2">Профиль мастера</h3>
                     <div>
                       <p className="text-sm text-muted-foreground">Категории</p>
-                      <p className="font-medium">{selectedUser.master_data.categories.join(', ') || 'Не указаны'}</p>
+                      <p className="font-medium">{selectedUser.master_data.categories?.join(', ') || 'Не указаны'}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Районы работы</p>
+                      <p className="font-medium">{selectedUser.master_data.districts?.join(', ') || 'Все районы'}</p>
                     </div>
                     <div>
                       <p className="text-sm text-muted-foreground">Описание ("Имя/опыт", которое он указал)</p>

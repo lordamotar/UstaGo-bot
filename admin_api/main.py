@@ -220,6 +220,95 @@ async def get_mini_stats():
             ]
         }
 
+@app.get("/api/v1/stats/orders-chart", dependencies=[Depends(verify_api_key)])
+async def get_orders_chart_data(
+    days: Optional[int] = 7, 
+    start: Optional[str] = None, 
+    end: Optional[str] = None,
+    master_id: Optional[int] = None,
+    category_id: Optional[int] = None,
+    district_id: Optional[int] = None,
+    split_by: Optional[str] = None # None, 'category', 'district', 'master'
+):
+    """Returns order counts grouped by day, optionally split by category/district/master."""
+    async with async_session_maker() as session:
+        try:
+            if start and end:
+                start_dt = datetime.fromisoformat(start)
+                end_dt = datetime.fromisoformat(end)
+            else:
+                end_dt = datetime.now()
+                start_dt = end_dt - timedelta(days=days)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format.")
+
+        # Base filter
+        where_clause = [Order.created_at >= start_dt, Order.created_at <= end_dt]
+        if category_id: where_clause.append(Order.category_id == category_id)
+        if district_id: where_clause.append(Order.district_id == district_id)
+        
+        if split_by == 'category':
+            stmt = select(func.date(Order.created_at).label("day"), Category.name.label("label"), func.count(Order.id))\
+                .join(Category, Order.category_id == Category.id)\
+                .where(*where_clause)\
+                .group_by(func.date(Order.created_at), Category.name)
+        elif split_by == 'district':
+            stmt = select(func.date(Order.created_at).label("day"), District.name.label("label"), func.count(Order.id))\
+                .join(District, Order.district_id == District.id)\
+                .where(*where_clause)\
+                .group_by(func.date(Order.created_at), District.name)
+        elif split_by == 'master':
+            stmt = select(func.date(Order.created_at).label("day"), User.full_name.label("label"), func.count(Order.id))\
+                .join(Bid, Bid.order_id == Order.id)\
+                .join(MasterProfile, Bid.master_id == MasterProfile.id)\
+                .join(User, MasterProfile.user_id == User.id)\
+                .where(*where_clause, Bid.status == 'ACCEPTED')\
+                .group_by(func.date(Order.created_at), User.full_name)
+        else:
+            # Default: split by 'Total' or apply master_id filter
+            stmt = select(func.date(Order.created_at).label("day"), func.count(Order.id))
+            if master_id:
+                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == 'ACCEPTED')
+            stmt = stmt.where(*where_clause).group_by(func.date(Order.created_at))
+
+        results = (await session.execute(stmt)).all()
+        
+        # Structure the data for Recharts [ {date: '...', Label1: N, Label2: M}, ... ]
+        data_map = {} # date -> { label -> count }
+        all_labels = set()
+        
+        for r in results:
+            day_str = str(r[0])
+            if split_by in ['category', 'district', 'master']:
+                label = r[1]
+                count = r[2]
+                if day_str not in data_map: data_map[day_str] = {}
+                data_map[day_str][label] = count
+                all_labels.add(label)
+            else:
+                count = r[1]
+                data_map[day_str] = {"Всего": count}
+                all_labels.add("Всего")
+
+        delta = (end_dt.date() - start_dt.date()).days
+        chart_data = []
+        for i in range(delta + 1):
+            day = (start_dt.date() + timedelta(days=i))
+            day_str = str(day)
+            
+            entry = {
+                "date": day.strftime("%d.%m"),
+                "full_date": day_str,
+            }
+            # Fill all labels (ensure zeros)
+            day_values = data_map.get(day_str, {})
+            for lbl in all_labels:
+                entry[lbl] = day_values.get(lbl, 0)
+                
+            chart_data.append(entry)
+            
+        return chart_data
+
 # --- SCHEMAS ---
 class MasterUpdate(BaseModel):
     status: Optional[MasterStatus] = None
@@ -291,6 +380,7 @@ async def list_users(role: Optional[UserRole] = None, skip: int = 0, limit: int 
         # Items
         stmt = select(User).options(
             selectinload(User.master_profile).selectinload(MasterProfile.categories),
+            selectinload(User.master_profile).selectinload(MasterProfile.districts),
             selectinload(User.master_profile).selectinload(MasterProfile.bids).selectinload(Bid.order),
             selectinload(User.orders_created)
         )
@@ -314,6 +404,7 @@ async def list_users(role: Optional[UserRole] = None, skip: int = 0, limit: int 
                     "master_id": u.master_profile.id,
                     "description": u.master_profile.description,
                     "categories": [c.name for c in u.master_profile.categories],
+                    "districts": [d.name for d in u.master_profile.districts],
                     "total_bids": total_bids,
                     "processed_orders": accepted_bids,
                     "status": u.master_profile.status,
@@ -497,10 +588,15 @@ async def get_order_details(order_id: int):
 # --- CATEGORIES & DISTRICTS ---
 
 @app.get("/api/v1/categories", dependencies=[Depends(verify_api_key)])
-async def list_categories():
+async def list_categories(skip: int = 0, limit: int = 500):
     async with async_session_maker() as session:
-        cats = (await session.execute(select(Category))).scalars().all()
-        return cats
+        # Total count
+        total = (await session.execute(select(func.count(Category.id)))).scalar() or 0
+        
+        # Items
+        stmt = select(Category).order_by(Category.name.asc()).offset(skip).limit(limit)
+        cats = (await session.execute(stmt)).scalars().all()
+        return {"total": total, "items": cats}
 
 @app.post("/api/v1/categories", dependencies=[Depends(verify_api_key)])
 async def add_category(data: NameUpdate):
@@ -520,10 +616,15 @@ async def delete_category(cat_id: int):
         raise HTTPException(status_code=404)
 
 @app.get("/api/v1/districts", dependencies=[Depends(verify_api_key)])
-async def list_districts():
+async def list_districts(skip: int = 0, limit: int = 500):
     async with async_session_maker() as session:
-        dists = (await session.execute(select(District))).scalars().all()
-        return dists
+        # Total count
+        total = (await session.execute(select(func.count(District.id)))).scalar() or 0
+        
+        # Items
+        stmt = select(District).order_by(District.name.asc()).offset(skip).limit(limit)
+        dists = (await session.execute(stmt)).scalars().all()
+        return {"total": total, "items": dists}
 
 @app.post("/api/v1/districts", dependencies=[Depends(verify_api_key)])
 async def add_district(data: NameUpdate):
@@ -532,17 +633,36 @@ async def add_district(data: NameUpdate):
         await session.commit()
         return {"status": "created"}
 
+@app.delete("/api/v1/districts/{dist_id}", dependencies=[Depends(verify_api_key)])
+async def delete_district(dist_id: int):
+    async with async_session_maker() as session:
+        dist = await session.get(District, dist_id)
+        if dist:
+            await session.delete(dist)
+            await session.commit()
+            return {"status": "deleted"}
+        raise HTTPException(status_code=404)
+
 # --- FINANCES ---
 
 @app.get("/api/v1/topups", dependencies=[Depends(verify_api_key)])
-async def list_topup_requests(status: Optional[str] = "PENDING"):
+async def list_topup_requests(status: Optional[str] = "PENDING", skip: int = 0, limit: int = 50):
     async with async_session_maker() as session:
+        # Total count
+        count_stmt = select(func.count(TopUpRequest.id))
+        if status:
+            count_stmt = count_stmt.where(TopUpRequest.status == status)
+        total = (await session.execute(count_stmt)).scalar() or 0
+
+        # Items
         stmt = select(TopUpRequest).options(selectinload(TopUpRequest.user))
         if status:
             stmt = stmt.where(TopUpRequest.status == status)
         
+        stmt = stmt.order_by(TopUpRequest.created_at.desc()).offset(skip).limit(limit)
         reqs = (await session.execute(stmt)).scalars().all()
-        return [{
+        
+        items = [{
             "id": r.id,
             "user_name": r.user.full_name,
             "amount": r.amount,
@@ -550,6 +670,8 @@ async def list_topup_requests(status: Optional[str] = "PENDING"):
             "receipt": r.receipt_data,
             "created_at": r.created_at
         } for r in reqs]
+        
+        return {"total": total, "items": items}
 
 @app.patch("/api/v1/topups/{request_id}", dependencies=[Depends(verify_api_key)])
 async def review_topup(request_id: int, data: TopUpReview):

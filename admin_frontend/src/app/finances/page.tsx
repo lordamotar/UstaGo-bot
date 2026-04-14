@@ -21,10 +21,14 @@ import Pagination from '@/components/Pagination';
 
 export default function FinancesPage() {
   const [topups, setTopups] = useState<any[]>([]);
+  const [topupTotal, setTopupTotal] = useState(0);
+  const [topupSkip, setTopupSkip] = useState(0);
+  const [topupLimit, setTopupLimit] = useState(10);
+
   const [transactions, setTransactions] = useState<any[]>([]);
   const [txTotal, setTxTotal] = useState(0);
   const [txSkip, setTxSkip] = useState(0);
-  const txLimit = 20;
+  const [txLimit, setTxLimit] = useState(20);
 
   const [settings, setSettings] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -42,6 +46,13 @@ export default function FinancesPage() {
 
   const router = useRouter();
 
+  const fetchMasters = async () => {
+    try {
+      const res = await api.get('/users', { params: { role: 'MASTER', limit: 100 } });
+      setMasters(res.data.items);
+    } catch (err) { console.error(err); }
+  };
+
   const fetchTransactions = async () => {
     try {
       const txsRes = await api.get(`/transactions?skip=${txSkip}&limit=${txLimit}`);
@@ -50,23 +61,22 @@ export default function FinancesPage() {
     } catch (err) { console.error(err); }
   };
 
-  const fetchMasters = async () => {
+  const fetchTopups = async () => {
     try {
-      const res = await api.get('/users', { params: { role: 'MASTER', limit: 100 } });
-      setMasters(res.data.items);
+      const res = await api.get('/topups', {
+        params: { skip: topupSkip, limit: topupLimit, status: 'PENDING' }
+      });
+      setTopups(res.data.items);
+      setTopupTotal(res.data.total);
     } catch (err) { console.error(err); }
-  };
+  }
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [topupsRes, settingsRes] = await Promise.all([
-        api.get('/topups'),
-        api.get('/settings')
-      ]);
-      setTopups(topupsRes.data);
+      const settingsRes = await api.get('/settings');
       setSettings(settingsRes.data);
-      await fetchTransactions();
+      await Promise.all([fetchTopups(), fetchTransactions(), fetchMasters()]);
     } catch (err) {
       console.error(err);
     } finally {
@@ -81,8 +91,10 @@ export default function FinancesPage() {
   useEffect(() => {
     if (activeTab === 'transactions') {
       fetchTransactions();
+    } else {
+      fetchTopups();
     }
-  }, [txSkip]);
+  }, [txSkip, txLimit, topupSkip, topupLimit, activeTab]);
 
   const handleTopupReview = async (id: number, status: string) => {
     try {
@@ -176,7 +188,7 @@ export default function FinancesPage() {
       </div>
 
 
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
         <div className="flex gap-4">
           <button 
             onClick={() => setActiveTab('topups')}
@@ -184,9 +196,9 @@ export default function FinancesPage() {
           >
             <CreditCard className="w-4 h-4" />
             Заявки на пополнение
-            {topups.length > 0 && (
+            {totalTopups > 0 && (
               <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full ml-1">
-                {topups.length}
+                {totalTopups}
               </span>
             )}
           </button>
@@ -199,13 +211,32 @@ export default function FinancesPage() {
           </button>
         </div>
 
-        <button 
-          onClick={() => { resetModal(); fetchMasters(); setIsAddPointsModalOpen(true); }}
-          className="px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-green-500/20 transition-all"
-        >
-          <CreditCard className="w-4 h-4" />
-          Добавить баллы
-        </button>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-muted-foreground uppercase">Показывать по:</span>
+            <div className="flex bg-secondary/50 p-1 rounded-xl border border-border">
+              {[10, 20, 50, 100].map((val) => (
+                <button
+                  key={val}
+                  onClick={() => { 
+                    if (activeTab === 'topups') { setTopupLimit(val); setTopupSkip(0); }
+                    else { setTxLimit(val); setTxSkip(0); }
+                  }}
+                  className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${(activeTab === 'topups' ? topupLimit : txLimit) === val ? 'bg-primary text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {val}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button 
+            onClick={() => { resetModal(); fetchMasters(); setIsAddPointsModalOpen(true); }}
+            className="px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-green-500/20 transition-all font-outfit"
+          >
+            <CreditCard className="w-4 h-4" />
+            Добавить баллы
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -325,14 +356,24 @@ export default function FinancesPage() {
               </div>
             )}
           </div>
-          {activeTab === 'transactions' && (
-            <Pagination 
-              total={txTotal} 
-              limit={txLimit} 
-              skip={txSkip} 
-              onPageChange={setTxSkip} 
-            />
-          )}
+          
+          <div className="p-4 border-t border-border bg-secondary/10">
+            {activeTab === 'topups' ? (
+              <Pagination 
+                total={topupTotal} 
+                limit={topupLimit} 
+                skip={topupSkip} 
+                onPageChange={setTopupSkip} 
+              />
+            ) : (
+              <Pagination 
+                total={txTotal} 
+                limit={txLimit} 
+                skip={txSkip} 
+                onPageChange={setTxSkip} 
+              />
+            )}
+          </div>
         </div>
       )}
 

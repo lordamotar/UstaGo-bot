@@ -19,7 +19,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [skip, setSkip] = useState(0);
-  const limit = 20;
+  const [limit, setLimit] = useState(20);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -47,7 +47,7 @@ export default function OrdersPage() {
 
   useEffect(() => {
     fetchOrders();
-  }, [skip, statusFilter]);
+  }, [skip, limit, statusFilter]);
 
   // Reset pagination when filter changes
   useEffect(() => {
@@ -102,8 +102,8 @@ export default function OrdersPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col md:flex-row gap-4 mb-8">
-        <div className="relative flex-1">
+      <div className="flex flex-col md:flex-row gap-4 mb-8 items-center justify-between">
+        <div className="relative flex-1 w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
           <input 
             type="text" 
@@ -113,18 +113,36 @@ export default function OrdersPage() {
             className="w-full bg-secondary/50 border border-border rounded-xl py-2.5 pl-10 pr-4 focus:ring-2 focus:ring-primary outline-none"
           />
         </div>
-        <div className="flex bg-secondary/50 p-1 rounded-xl border border-border overflow-x-auto">
-          {['ALL', 'NEW', 'ACTIVE', 'COMPLETED', 'CANCELLED'].map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatusFilter(s)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
-                statusFilter === s ? 'bg-primary text-white shadow-lg' : 'hover:bg-background/50'
-              }`}
-            >
-              {s === 'ALL' ? 'Все' : getStatusName(s)}
-            </button>
-          ))}
+        
+        <div className="flex items-center gap-6">
+          <div className="flex bg-secondary/50 p-1 rounded-xl border border-border overflow-x-auto">
+            {['ALL', 'NEW', 'ACTIVE', 'COMPLETED', 'CANCELLED'].map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+                  statusFilter === s ? 'bg-primary text-white shadow-lg' : 'hover:bg-background/50'
+                }`}
+              >
+                {s === 'ALL' ? 'Все' : getStatusName(s)}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+             <span className="text-[10px] font-bold text-muted-foreground uppercase">Показывать по:</span>
+             <div className="flex bg-secondary/50 p-1 rounded-lg border border-border">
+               {[10, 20, 50, 100].map((val) => (
+                 <button
+                   key={val}
+                   onClick={() => { setLimit(val); setSkip(0); }}
+                   className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${limit === val ? 'bg-primary text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                 >
+                   {val}
+                 </button>
+               ))}
+             </div>
+          </div>
         </div>
       </div>
 
