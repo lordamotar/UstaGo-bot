@@ -196,9 +196,9 @@ export default function FinancesPage() {
           >
             <CreditCard className="w-4 h-4" />
             Заявки на пополнение
-            {totalTopups > 0 && (
+            {topupTotal > 0 && (
               <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full ml-1">
-                {totalTopups}
+                {topupTotal}
               </span>
             )}
           </button>
