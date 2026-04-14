@@ -368,7 +368,7 @@ export default function DashboardPage() {
               />
             </div>
             <button 
-              onClick={() => fetchChartData('custom', customDates)}
+              onClick={() => fetchChartData('custom', viewMode, customDates)}
               disabled={!customDates.start || !customDates.end || chartLoading}
               className="px-4 py-1.5 bg-primary hover:bg-primary/90 disabled:opacity-50 text-white text-sm font-bold rounded-lg transition-all"
             >
