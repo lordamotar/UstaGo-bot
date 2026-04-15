@@ -137,7 +137,20 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         stmt = select(User).where(User.username == form_data.username)
         user = (await session.execute(stmt)).scalar_one_or_none()
         
-        if not user or not verify_password(form_data.password, user.hashed_password):
+        print(f"DEBUG LOGIN: Attempt for username='{form_data.username}'")
+        if not user:
+            print(f"DEBUG LOGIN: User '{form_data.username}' NOT FOUND in database")
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        is_valid = verify_password(form_data.password, user.hashed_password)
+        print(f"DEBUG LOGIN: User found. ID={user.id}, Role={user.role}")
+        print(f"DEBUG LOGIN: Password verification result: {is_valid}")
+
+        if not is_valid:
             raise HTTPException(
                 status_code=401,
                 detail="Incorrect username or password",
