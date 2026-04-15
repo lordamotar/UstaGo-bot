@@ -18,4 +18,7 @@ dependencies = [
     "redis>=7.4.0",
     "sqlalchemy>=2.0.48",
     "uvicorn>=0.44.0",
+    "sentry-sdk[fastapi]",
+    "pytest",
+    "pytest-asyncio",
 ]
