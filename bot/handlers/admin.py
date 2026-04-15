@@ -26,13 +26,7 @@ async def log_admin_action(session, telegram_id: int, action: str, details: str)
     stmt = select(User.id).where(User.telegram_id == telegram_id)
     admin_id = (await session.execute(stmt)).scalar_one_or_none()
     session.add(AdminLog(admin_id=admin_id, action=action, details=details))
-+
-+async def log_admin_action(session, telegram_id: int, action: str, details: str):
-+    """Helper to log admin actions from the bot."""
-+    # Find internal user ID from telegram ID
-+    stmt = select(User.id).where(User.telegram_id == telegram_id)
-+    admin_id = (await session.execute(stmt)).scalar_one_or_none()
-+    session.add(AdminLog(admin_id=admin_id, action=action, details=details))
+
 
 @router.message(Command("admin"))
 @router.message(F.text == "👨‍✈️ Админ-панель")
