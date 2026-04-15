@@ -15,6 +15,20 @@ from aiogram import Bot
 from fastapi.responses import FileResponse
 import admin_api.backups as backup_util
 import asyncio
+import sentry_sdk
+import random
+import time
+
+# --- SENTRY INITIALIZATION ---
+if config.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=config.SENTRY_DSN,
+        traces_sample_rate=0.3,
+        profiles_sample_rate=0.1,
+        send_default_pii=False,
+        environment="production",
+        enable_tracing=True,
+    )
 
 app = FastAPI(title="UstaGo Admin API")
 bot_instance = Bot(token=config.BOT_TOKEN)
@@ -45,6 +59,9 @@ async def startup_event():
 
 async def scheduled_backups():
     """Background task to create a backup every 24 hours."""
+    # Wait 1 minute after startup before first backup
+    await asyncio.sleep(60)
+    
     while True:
         try:
             print(f"[{datetime.now()}] Starting automated backup...")
@@ -68,6 +85,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 # --- AUTH UTILS ---
+
+# 2FA temporary code storage: {username: {"code": "123456", "expires": timestamp}}
+_2fa_codes: dict = {}
 
 def verify_password(plain_password, hashed_password):
     if not hashed_password: return False
@@ -114,7 +134,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 @app.post("/api/v1/auth/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     async with async_session_maker() as session:
-        # Пытаемся найти по username
         stmt = select(User).where(User.username == form_data.username)
         user = (await session.execute(stmt)).scalar_one_or_none()
         
@@ -125,11 +144,58 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": user.username}, expires_delta=access_token_expires
-        )
-        return {"access_token": access_token, "token_type": "bearer"}
+        if user.role != UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        
+        # Generate 2FA code and send to Telegram
+        code = str(random.randint(100000, 999999))
+        _2fa_codes[user.username] = {
+            "code": code,
+            "expires": time.time() + 300  # 5 minutes TTL
+        }
+        
+        # Send code via Telegram
+        try:
+            await bot_instance.send_message(
+                user.telegram_id,
+                f"🔐 <b>Код подтверждения для входа в админ-панель:</b>\n\n"
+                f"<code>{code}</code>\n\n"
+                f"⏱ Код действителен 5 минут.\n"
+                f"❗️ Если вы не запрашивали вход, проигнорируйте это сообщение.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"Failed to send 2FA code to {user.telegram_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to send 2FA code")
+        
+        return {"requires_2fa": True, "message": "2FA code sent to your Telegram"}
+
+class TwoFAVerify(BaseModel):
+    username: str
+    code: str
+
+@app.post("/api/v1/auth/verify-2fa")
+async def verify_2fa(data: TwoFAVerify):
+    stored = _2fa_codes.get(data.username)
+    
+    if not stored:
+        raise HTTPException(status_code=400, detail="No 2FA code requested. Please login again.")
+    
+    if time.time() > stored["expires"]:
+        del _2fa_codes[data.username]
+        raise HTTPException(status_code=400, detail="2FA code expired. Please login again.")
+    
+    if stored["code"] != data.code:
+        raise HTTPException(status_code=400, detail="Invalid 2FA code")
+    
+    # Code is valid — clean up and issue JWT
+    del _2fa_codes[data.username]
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": data.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/api/v1/auth/me")
 async def read_users_me(current_user: User = Depends(get_current_user)):

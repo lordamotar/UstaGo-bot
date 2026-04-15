@@ -1,0 +1,274 @@
+{
+  "metadata": {
+    "timestamp": "2026-04-15T11:16:08.936831",
+    "version": "1.0"
+  },
+  "data": {
+    "master_category_subscriptions": [
+      {
+        "master_profile_id": 1,
+        "category_id": 2
+      },
+      {
+        "master_profile_id": 1,
+        "category_id": 1
+      },
+      {
+        "master_profile_id": 1,
+        "category_id": 5
+      },
+      {
+        "master_profile_id": 1,
+        "category_id": 3
+      },
+      {
+        "master_profile_id": 1,
+        "category_id": 6
+      }
+    ],
+    "master_district_areas": [
+      {
+        "master_profile_id": 1,
+        "district_id": 1
+      }
+    ],
+    "users": [
+      {
+        "id": 1,
+        "telegram_id": 312082048,
+        "full_name": "Yermek",
+        "username": "Lordamotar",
+        "hashed_password": null,
+        "phone_number": "+77753424424",
+        "role": "CLIENT",
+        "referred_by": null,
+        "points": 0,
+        "banned_until": null,
+        "agreed_to_terms": true,
+        "notifications_enabled": true,
+        "dnd_start": null,
+        "dnd_end": null,
+        "visible_for_new_orders": true,
+        "created_at": "2026-04-05T05:41:12.700034"
+      },
+      {
+        "id": 3,
+        "telegram_id": 7949949543,
+        "full_name": "Li Lili",
+        "username": "NameRuh",
+        "hashed_password": null,
+        "phone_number": "77053576997",
+        "role": "CLIENT",
+        "referred_by": null,
+        "points": 0,
+        "banned_until": null,
+        "agreed_to_terms": true,
+        "notifications_enabled": true,
+        "dnd_start": null,
+        "dnd_end": null,
+        "visible_for_new_orders": true,
+        "created_at": "2026-04-05T05:56:07.122583"
+      },
+      {
+        "id": 4,
+        "telegram_id": 0,
+        "full_name": "Administrator",
+        "username": "admin",
+        "hashed_password": "$2b$12$zXwNF1Qeb3kfYFCL7nzIVugd49be0Y9UxF9WKapPQQ1l2iPf8EmVe",
+        "phone_number": null,
+        "role": "ADMIN",
+        "referred_by": null,
+        "points": 0,
+        "banned_until": null,
+        "agreed_to_terms": false,
+        "notifications_enabled": true,
+        "dnd_start": null,
+        "dnd_end": null,
+        "visible_for_new_orders": true,
+        "created_at": "2026-04-10T15:23:10.314387"
+      },
+      {
+        "id": 2,
+        "telegram_id": 614138321,
+        "full_name": "винс",
+        "username": "gonzo_089",
+        "hashed_password": null,
+        "phone_number": "77057520601",
+        "role": "MASTER",
+        "referred_by": null,
+        "points": 3050,
+        "banned_until": null,
+        "agreed_to_terms": true,
+        "notifications_enabled": true,
+        "dnd_start": null,
+        "dnd_end": null,
+        "visible_for_new_orders": true,
+        "created_at": "2026-04-05T05:42:12.224494"
+      }
+    ],
+    "categories": [
+      {
+        "id": 1,
+        "name": "🚰 Сантехник",
+        "is_active": true,
+        "created_at": "2026-04-05T05:40:54.254320"
+      },
+      {
+        "id": 2,
+        "name": "⚡️ Электрик",
+        "is_active": true,
+        "created_at": "2026-04-05T05:40:54.254320"
+      },
+      {
+        "id": 3,
+        "name": "🔨 Плотник/Мебель",
+        "is_active": true,
+        "created_at": "2026-04-05T05:40:54.254320"
+      },
+      {
+        "id": 4,
+        "name": "🚛 Грузоперевозки",
+        "is_active": true,
+        "created_at": "2026-04-05T05:40:54.254320"
+      },
+      {
+        "id": 5,
+        "name": "🧹 Уборка/Клининг",
+        "is_active": true,
+        "created_at": "2026-04-05T05:40:54.254320"
+      },
+      {
+        "id": 6,
+        "name": "💻 Ремонт техники",
+        "is_active": true,
+        "created_at": "2026-04-05T05:40:54.254320"
+      }
+    ],
+    "districts": [
+      {
+        "id": 1,
+        "name": "000"
+      }
+    ],
+    "master_profiles": [
+      {
+        "id": 1,
+        "user_id": 2,
+        "status": "APPROVED",
+        "description": "45",
+        "experience": "5",
+        "rating": 0.0,
+        "is_accredited": true,
+        "work_photos": []
+      }
+    ],
+    "orders": [
+      {
+        "id": 1,
+        "client_id": 3,
+        "category_id": 1,
+        "district_id": 1,
+        "description": "123",
+        "budget": 100,
+        "status": "COMPLETED",
+        "photo_ids": [],
+        "created_at": "2026-04-10T08:06:13.541311"
+      }
+    ],
+    "bids": [
+      {
+        "id": 1,
+        "order_id": 1,
+        "master_id": 1,
+        "suggested_price": 200,
+        "status": "accepted",
+        "message": "000",
+        "created_at": "2026-04-10T08:07:39.106045"
+      }
+    ],
+    "support_tickets": [],
+    "support_chats": [],
+    "reviews": [],
+    "transactions": [
+      {
+        "id": 1,
+        "user_id": 2,
+        "amount": 2000,
+        "type": "REFERRAL_BONUS",
+        "description": "Приветственный бонус при регистрации",
+        "order_id": null,
+        "created_at": "2026-04-10T08:03:51.537238"
+      },
+      {
+        "id": 2,
+        "user_id": 2,
+        "amount": -50,
+        "type": "CONTACT_FEE",
+        "description": "Отклик на заказ №1",
+        "order_id": null,
+        "created_at": "2026-04-10T08:07:39.122330"
+      },
+      {
+        "id": 3,
+        "user_id": 2,
+        "amount": 500,
+        "type": "ADMIN_ADJUSTMENT",
+        "description": "Бонус от администрации",
+        "order_id": null,
+        "created_at": "2026-04-13T16:14:31.478189"
+      },
+      {
+        "id": 4,
+        "user_id": 2,
+        "amount": 500,
+        "type": "ADMIN_ADJUSTMENT",
+        "description": "Бонус от администрации",
+        "order_id": null,
+        "created_at": "2026-04-13T16:17:00.299644"
+      },
+      {
+        "id": 5,
+        "user_id": 2,
+        "amount": 100,
+        "type": "ADMIN_ADJUSTMENT",
+        "description": "Бонус от администрации",
+        "order_id": null,
+        "created_at": "2026-04-13T16:17:27.095640"
+      }
+    ],
+    "system_settings": [
+      {
+        "id": 1,
+        "crypto_enabled": false,
+        "crypto_address": "UQC2O8SxqGZ0VRYPDnNEYd2ASHui0dZF_YIQQ1bD1xnJFy8z",
+        "bank_enabled": false,
+        "bank_details": "4002890039798909",
+        "free_orders_enabled": false
+      }
+    ],
+    "topup_requests": [],
+    "admin_logs": [
+      {
+        "id": 1,
+        "admin_id": 4,
+        "action": "CREATE_BACKUP",
+        "details": "Manual backup created: backup_20260415_104528.json",
+        "created_at": "2026-04-15T05:45:29.030595"
+      },
+      {
+        "id": 2,
+        "admin_id": 4,
+        "action": "DELETE_BACKUP",
+        "details": "Backup deleted: backup_20260415_103521.json",
+        "created_at": "2026-04-15T05:45:40.398899"
+      },
+      {
+        "id": 3,
+        "admin_id": 4,
+        "action": "DELETE_BACKUP",
+        "details": "Backup deleted: backup_20260415_104002.json",
+        "created_at": "2026-04-15T05:45:46.503934"
+      }
+    ]
+  }
+}

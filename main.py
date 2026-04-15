@@ -4,6 +4,16 @@ from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from bot.core.config import config
+import sentry_sdk
+
+# --- SENTRY INITIALIZATION FOR BOT ---
+if config.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=config.SENTRY_DSN,
+        traces_sample_rate=0.1,
+        send_default_pii=False,
+        environment="production",
+    )
 
 # Routers
 from bot.handlers.registration import router as registration_router

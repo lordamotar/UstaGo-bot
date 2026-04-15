@@ -28,5 +28,6 @@ class Config:
     # Administration: list of telegram IDs allowed to use admin commands
     ADMIN_IDS = [int(uid) for uid in os.getenv("ADMIN_IDS", "").split(",") if uid.strip()]
     ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+    SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
 config = Config()
