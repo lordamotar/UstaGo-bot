@@ -106,6 +106,7 @@ export default function LogsPage() {
               <thead className="bg-secondary/30 border-b border-border">
                 <tr>
                   <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Дата</th>
+                  <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Админ</th>
                   <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Действие</th>
                   <th className="px-6 py-4 text-sm font-semibold text-muted-foreground">Детали</th>
                 </tr>
@@ -124,6 +125,12 @@ export default function LogsPage() {
                         <div className="flex items-center gap-2 text-sm">
                           <Calendar className="w-4 h-4 text-muted-foreground" />
                           {new Date(l.created_at).toLocaleString()}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <ShieldCheck className="w-4 h-4 text-primary" />
+                          {l.admin_name}
                         </div>
                       </td>
                       <td className="px-6 py-4">

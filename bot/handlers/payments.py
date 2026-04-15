@@ -108,21 +108,29 @@ async def process_refill_receipt(message: Message, state: FSMContext):
         )
         session.add(new_request)
         await session.commit()
+        await session.refresh(new_request)
+        req_id = new_request.id
     
     await state.clear()
     await message.answer("✅ <b>Ваша заявка принята!</b>\nАдминистратор проверит платеж и начислит баллы. Вы получите уведомление.", parse_mode="HTML")
     
-    # Notify Admins
+    # Notify Admins with buttons
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"tr_approve:{req_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"tr_reject:{req_id}")
+        ]
+    ])
+    
     admin_notif = (
-        f"💰 <b>Новая заявка на пополнение!</b>\n\n"
+        f"💰 <b>Новая заявка на пополнение #{req_id}</b>\n\n"
         f"👤 От: {user.full_name} (<code>{user.telegram_id}</code>)\n"
         f"💵 Сумма: <b>{amount}</b>\n"
-        f"🔹 Метод: {method}\n\n"
-        "Перейдите в админ-панель -> Настройки оплаты -> Заявки, чтобы одобрить."
+        f"🔹 Метод: {method}\n"
     )
     for admin_id in config.ADMIN_IDS:
         try:
-            await message.bot.send_photo(admin_id, photo_id, caption=admin_notif, parse_mode="HTML")
+            await message.bot.send_photo(admin_id, photo_id, caption=admin_notif, parse_mode="HTML", reply_markup=kb)
         except Exception: pass
 
 @router.message(TopUpStates.uploading_receipt)

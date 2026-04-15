@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 from bot.core.config import config
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType, Order, OrderStatus, Category, District, SystemSettings, TopUpRequest
+from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType, Order, OrderStatus, Category, District, SystemSettings, TopUpRequest, AdminLog
 from sqlalchemy import select, func, update, delete, or_
 from sqlalchemy.orm import selectinload
 from bot.keyboards.master import get_master_main_menu
@@ -19,6 +19,20 @@ from aiogram.fsm.context import FSMContext
 from datetime import datetime, timedelta, timezone
 
 router = Router()
+
+async def log_admin_action(session, telegram_id: int, action: str, details: str):
+    """Helper to log admin actions from the bot."""
+    # Find internal user ID from telegram ID
+    stmt = select(User.id).where(User.telegram_id == telegram_id)
+    admin_id = (await session.execute(stmt)).scalar_one_or_none()
+    session.add(AdminLog(admin_id=admin_id, action=action, details=details))
++
++async def log_admin_action(session, telegram_id: int, action: str, details: str):
++    """Helper to log admin actions from the bot."""
++    # Find internal user ID from telegram ID
++    stmt = select(User.id).where(User.telegram_id == telegram_id)
++    admin_id = (await session.execute(stmt)).scalar_one_or_none()
++    session.add(AdminLog(admin_id=admin_id, action=action, details=details))
 
 @router.message(Command("admin"))
 @router.message(F.text == "👨‍✈️ Админ-панель")
@@ -180,6 +194,7 @@ async def toggle_master_accreditation(callback: CallbackQuery):
         if profile:
             profile.is_accredited = not profile.is_accredited
             status = "аккредитован" if profile.is_accredited else "обычный статус"
+            await log_admin_action(session, callback.from_user.id, "TOGGLE_ACCREDITATION", f"Master #{master_id} set to {status}")
             await session.commit()
             await callback.answer(f"✅ Мастер теперь {status}!", show_alert=True)
             # Update message
@@ -231,6 +246,7 @@ async def approve_master(callback: CallbackQuery):
                 
         tg_id = user.telegram_id
         is_target_admin = tg_id in config.ADMIN_IDS
+        await log_admin_action(session, callback.from_user.id, "APPROVE_MASTER", f"Master #{master_id} approved. User: {user.full_name}")
         await session.commit()
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")
     try:
@@ -251,6 +267,7 @@ async def reject_master(callback: CallbackQuery):
     master_id = int(callback.data.split(":")[1])
     async with async_session_maker() as session:
         await session.execute(update(MasterProfile).where(MasterProfile.id == master_id).values(status=MasterStatus.REJECTED))
+        await log_admin_action(session, callback.from_user.id, "REJECT_MASTER", f"Master #{master_id} rejected")
         await session.commit()
     await callback.message.edit_text(f"❌ Мастер #{master_id} отклонен.")
     await callback.answer()
@@ -293,6 +310,7 @@ async def admin_refill_points(message: Message):
             type=TransactionType.ADMIN_ADJUSTMENT, 
             description="Ручное пополнение администратором"
         ))
+        await log_admin_action(session, message.from_user.id, "REFILL_POINTS", f"Refilled {amount} to user {user.full_name} ({user.id})")
         await session.commit()
         
     await message.answer(f"✅ Баланс пользователя <b>{user.full_name}</b> пополнен на <b>{amount}</b> баллов.", parse_mode="HTML")
@@ -319,6 +337,7 @@ async def admin_add_cat_start(callback: CallbackQuery, state: FSMContext):
 async def admin_add_cat_finish(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         session.add(Category(name=message.text))
+        await log_admin_action(session, message.from_user.id, "ADD_CATEGORY", f"Category added: {message.text}")
         await session.commit()
     await state.clear()
     await message.answer(f"✅ Категория «{message.text}» успешно добавлена!")
@@ -341,7 +360,9 @@ async def admin_del_cat(callback: CallbackQuery):
             return
             
         cat = await session.get(Category, cat_id)
+        cat_name = cat.name
         await session.delete(cat)
+        await log_admin_action(session, callback.from_user.id, "DELETE_CATEGORY", f"Category deleted: {cat_name} (#{cat_id})")
         await session.commit()
     await callback.answer(f"✅ Категория удалена (затронуто мастеров: {masters_c})")
     await admin_manage_categories(callback.message)
@@ -364,6 +385,7 @@ async def admin_add_dist_start(callback: CallbackQuery, state: FSMContext):
 async def admin_add_dist_finish(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         session.add(District(name=message.text))
+        await log_admin_action(session, message.from_user.id, "ADD_DISTRICT", f"District added: {message.text}")
         await session.commit()
     await state.clear()
     await message.answer(f"✅ Район «{message.text}» успешно добавлен!")
@@ -385,7 +407,9 @@ async def admin_del_dist(callback: CallbackQuery):
             return
             
         dist = await session.get(District, dist_id)
+        dist_name = dist.name
         await session.delete(dist)
+        await log_admin_action(session, callback.from_user.id, "DELETE_DISTRICT", f"District deleted: {dist_name} (#{dist_id})")
         await session.commit()
     await callback.answer(f"✅ Район удален (затронуто мастеров: {masters_c})")
     await admin_manage_districts(callback.message)
@@ -565,7 +589,8 @@ async def process_ban_execution(callback: CallbackQuery, state: FSMContext):
             user.banned_until = ban_date
             msg = f"🚫 Ваш аккаунт заблокирован до {ban_date.strftime('%d.%m.%Y %H:%M')} за нарушение правил."
             admin_msg = f"🚫 Пользователь #{uid} забанен на {days} дн."
-
+        
+        await log_admin_action(session, callback.from_user.id, "USER_BAN", f"User #{uid} ban period: {days} days")
         await session.commit()
     
     try:
@@ -615,6 +640,9 @@ async def process_pay_toggle(callback: CallbackQuery):
             settings.crypto_enabled = not settings.crypto_enabled
         else:
             settings.bank_enabled = not settings.bank_enabled
+            
+        act = "ENABLED" if (settings.crypto_enabled if method == "crypto" else settings.bank_enabled) else "DISABLED"
+        await log_admin_action(session, callback.from_user.id, f"TOGGLE_PAYMENT_{method.upper()}", f"Set to {act}")
         await session.commit()
         
     await callback.answer("✅ Настройки обновлены")
@@ -641,6 +669,7 @@ async def process_crypto_address(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         settings = await session.get(SystemSettings, 1)
         settings.crypto_address = message.text
+        await log_admin_action(session, message.from_user.id, "EDIT_CRYPTO_ADDRESS", f"New address: {message.text}")
         await session.commit()
     await state.clear()
     await message.answer(f"✅ Адрес криптовалюты обновлен на: <code>{message.text}</code>", parse_mode="HTML")
@@ -651,6 +680,7 @@ async def process_bank_details(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         settings = await session.get(SystemSettings, 1)
         settings.bank_details = message.text
+        await log_admin_action(session, message.from_user.id, "EDIT_BANK_DETAILS", f"Bank details updated")
         await session.commit()
     await state.clear()
     await message.answer(f"✅ Банковские реквизиты обновлены.", parse_mode="HTML")
@@ -718,6 +748,7 @@ async def process_topup_review(callback: CallbackQuery):
             msg = f"❌ <b>Ваша заявка на пополнение отклонена.</b>\nЕсли вы считаете это ошибкой, свяжитесь с поддержкой."
             admin_msg = f"❌ Заявка #{request_id} отклонена."
             
+        await log_admin_action(session, callback.from_user.id, f"TOPUP_{action.split('_')[1].upper()}", f"Request #{request_id} reviewed via Bot")
         await session.commit()
         
     try:

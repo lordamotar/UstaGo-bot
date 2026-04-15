@@ -12,6 +12,9 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from bot.core.config import config
 from aiogram import Bot
+from fastapi.responses import FileResponse
+import admin_api.backups as backup_util
+import asyncio
 
 app = FastAPI(title="UstaGo Admin API")
 bot_instance = Bot(token=config.BOT_TOKEN)
@@ -34,6 +37,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    # Start background task for daily backups
+    asyncio.create_task(scheduled_backups())
+
+async def scheduled_backups():
+    """Background task to create a backup every 24 hours."""
+    while True:
+        try:
+            print(f"[{datetime.now()}] Starting automated backup...")
+            await backup_util.create_backup()
+            # Clean old backups (keep last 10)
+            backups = backup_util.list_backups()
+            if len(backups) > 10:
+                for b in backups[10:]:
+                    backup_util.delete_backup(b["filename"])
+        except Exception as e:
+            print(f"Scheduled backup failed: {e}")
+        
+        await asyncio.sleep(60 * 60 * 24) # 24 hours
 
 # Security Configuration
 SECRET_KEY = getattr(config, "JWT_SECRET_KEY", "your-secret-key-change-it-in-env")
@@ -368,7 +392,7 @@ async def update_settings(data: SystemSettingsUpdate):
         if data.bank_details is not None: settings.bank_details = data.bank_details
         if data.free_orders_enabled is not None: settings.free_orders_enabled = data.free_orders_enabled
         
-        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.json(exclude_none=True)}")
+        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.json(exclude_none=True)}", admin_id=current_user.id)
         await session.commit()
         return {"status": "success"}
 
@@ -708,7 +732,7 @@ async def review_topup(request_id: int, data: TopUpReview):
                 f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\nЕсли у вас есть вопросы, обратитесь в поддержку."
             )
             
-        await log_action(session, f"TOPUP_{data.status}", f"Request #{request_id} reviewed. User: {user.full_name}, Amount: {req.amount}")
+        await log_action(session, f"TOPUP_{data.status}", f"Request #{request_id} reviewed. User: {user.full_name}, Amount: {req.amount}", admin_id=current_user.id)
         await session.commit()
         return {"status": "success"}
 
@@ -768,7 +792,7 @@ async def bulk_adjust_points(data: BulkPointAdjustment):
                 f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\nВаш текущий баланс: <b>{user.points} ₸</b>"
             )
             
-        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(users)}, Reason: {data.description}")
+        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(users)}, Reason: {data.description}", admin_id=current_user.id)
         await session.commit()
         return {"status": "success", "count": len(users)}
 
@@ -777,6 +801,56 @@ async def list_admin_logs(skip: int = 0, limit: int = 50):
     """Returns administrative logs with pagination."""
     async with async_session_maker() as session:
         total = (await session.execute(select(func.count(AdminLog.id)))).scalar() or 0
-        stmt = select(AdminLog).order_by(AdminLog.created_at.desc()).offset(skip).limit(limit)
-        logs = (await session.execute(stmt)).scalars().all()
-        return {"total": total, "items": logs}
+        stmt = (
+            select(AdminLog)
+            .outerjoin(User, AdminLog.admin_id == User.id)
+            .add_columns(User.full_name.label("admin_name"))
+            .order_by(AdminLog.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+        results = (await session.execute(stmt)).all()
+        
+        items = []
+        for log, admin_name in results:
+            items.append({
+                "id": log.id,
+                "admin_id": log.admin_id,
+                "admin_name": admin_name or "Bot/System",
+                "action": log.action,
+                "details": log.details,
+                "created_at": log.created_at
+            })
+            
+        return {"total": total, "items": items}
+
+# --- BACKUP ENDPOINTS ---
+
+@app.get("/api/v1/backups", dependencies=[Depends(verify_api_key)])
+async def list_backups():
+    return backup_util.list_backups()
+
+@app.post("/api/v1/backups", dependencies=[Depends(verify_api_key)])
+async def trigger_backup(current_user: User = Depends(get_current_user)):
+    filename = await backup_util.create_backup()
+    async with async_session_maker() as session:
+        await log_action(session, "CREATE_BACKUP", f"Manual backup created: {filename}", admin_id=current_user.id)
+        await session.commit()
+    return {"status": "success", "filename": filename}
+
+@app.get("/api/v1/backups/{filename}", dependencies=[Depends(verify_api_key)])
+async def download_backup(filename: str):
+    path = backup_util.get_backup_path(filename)
+    if not path:
+        raise HTTPException(status_code=404, detail="Backup file not found")
+    return FileResponse(path, filename=filename, media_type='application/json')
+
+@app.delete("/api/v1/backups/{filename}", dependencies=[Depends(verify_api_key)])
+async def delete_backup(filename: str, current_user: User = Depends(get_current_user)):
+    success = backup_util.delete_backup(filename)
+    if not success:
+        raise HTTPException(status_code=404, detail="Backup file not found")
+    async with async_session_maker() as session:
+        await log_action(session, "DELETE_BACKUP", f"Backup deleted: {filename}", admin_id=current_user.id)
+        await session.commit()
+    return {"status": "success"}
