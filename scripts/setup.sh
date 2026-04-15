@@ -28,65 +28,75 @@ echo -e "${YELLOW}📦 Шаг 1: Обновление системы и уста
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y git curl build-essential postgresql postgresql-contrib openssl
 
-# 3. Установка uv (менеджер Python)
+# 3. Установка Node.js 20 и PM2
+echo -e "${YELLOW}🟢 Шаг 2: Установка Node.js 20 и PM2...${NC}"
+if ! command -v node &> /dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt install -y nodejs
+fi
+sudo npm install -g pm2
+
+# 4. Установка uv (менеджер Python)
 if ! command -v uv &> /dev/null; then
-    echo -e "${YELLOW}✨ Шаг 2: Установка uv...${NC}"
+    echo -e "${YELLOW}✨ Шаг 3: Установка uv...${NC}"
     curl -LsSf https://astral-sh/uv/install.sh | sh
     source $HOME/.cargo/env
 else
     echo -e "${GREEN}✅ uv уже установлен.${NC}"
 fi
 
-# 4. Настройка PostgreSQL
-echo -e "${YELLOW}🐘 Шаг 3: Настройка базы данных PostgreSQL...${NC}"
+# 5. Настройка PostgreSQL
+echo -e "${YELLOW}🐘 Шаг 4: Настройка базы данных PostgreSQL...${NC}"
 DB_NAME="ustago_db"
 DB_USER="ustago_admin"
-# Генерируем случайный пароль, если его нет
 DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 20)
 
-# Создаем БД и пользователя (игнорируем ошибки, если уже созданы)
 sudo -u postgres psql -c "CREATE DATABASE $DB_NAME;" 2>/dev/null || echo "База данных уже существует"
 sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev/null || echo "Пользователь базы данных уже существует"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" 2>/dev/null
-sudo -u postgres psql -c "ALTER DATABASE $DB_NAME OWNER TO $DB_USER;" 2>/dev/null
 
-# 5. Проверка наличия .env
+# 6. Определение IP и настройка .env
+SERVER_IP=$(curl -s https://ifconfig.me)
 if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}📝 Шаг 4: Настройка переменных окружения (.env)...${NC}"
-    echo -e "${YELLOW}Пожалуйста, введите данные бота:${NC}"
+    echo -e "${YELLOW}📝 Шаг 5: Настройка переменных окружения...${NC}"
     read -p "Введите BOT_TOKEN (от @BotFather): " USER_BOT_TOKEN
-    read -p "Введите ADMIN_IDS (через запятую, например 1234567,890123): " USER_ADMIN_IDS
     
     cat <<EOF > .env
 BOT_TOKEN=$USER_BOT_TOKEN
 DATABASE_URL=postgresql+asyncpg://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
-DB_USER=$DB_USER
-DB_NAME=$DB_NAME
-DB_PASS=$DB_PASS
-DB_HOST=localhost
-DB_PORT=5432
-ADMIN_IDS=$USER_ADMIN_IDS
+ADMIN_IDS=
+SENTRY_DSN=
 EOF
-    echo -e "${GREEN}✅ Файл .env успешно создан.${NC}"
-else
-    echo -e "${GREEN}✅ Файл .env уже существует. Пропускаю настройку.${NC}"
+
+    # Настройка фронтенда
+    echo "NEXT_PUBLIC_API_URL=http://$SERVER_IP:8000/api/v1" > admin_frontend/.env.local
+    sed -i "s/127.0.0.1/$SERVER_IP/g" admin_frontend/src/lib/api.ts
 fi
 
-# 6. Установка зависимостей проекта
-echo -e "${YELLOW}🐍 Шаг 5: Установка зависимостей через uv sync...${NC}"
+# 7. Установка зависимостей и сборка
+echo -e "${YELLOW}📦 Шаг 6: Установка зависимостей и сборка...${NC}"
 uv sync
+uv run alembic upgrade head
 
-# 7. Инициализация базы данных
-echo -e "${YELLOW}🏗 Шаг 6: Создание таблиц и начальных данных...${NC}"
-PYTHONPATH=. uv run python scripts/reset_db.py
+if [ -d "admin_frontend" ]; then
+    cd admin_frontend
+    npm install
+    npm run build
+    cd ..
+fi
 
-# 8. Настройка Systemd сервиса
-echo -e "${YELLOW}⚙️ Шаг 7: Создание системного сервиса (ustago.service)...${NC}"
+# 8. Настройка PM2 и Systemd
+echo -e "${YELLOW}🚀 Шаг 7: Запуск сервисов...${NC}"
+# Backend
+pm2 start "uv run uvicorn admin_api.main:app --host 0.0.0.0 --port 8000" --name "ustago-backend"
+# Frontend
+pm2 start "npm run start" --name "ustago-frontend" --cwd "$(pwd)/admin_frontend"
+pm2 save
+
+# Bot (Systemd)
 CUR_USER=$(whoami)
 CUR_DIR=$(pwd)
-SERVICE_FILE="/etc/systemd/system/ustago.service"
-
-sudo bash -c "cat <<EOF > $SERVICE_FILE
+sudo bash -c "cat <<EOF > /etc/systemd/system/ustago.service
 [Unit]
 Description=UstaGo Telegram Bot Service
 After=network.target postgresql.service
@@ -103,15 +113,13 @@ EnvironmentFile=$CUR_DIR/.env
 WantedBy=multi-user.target
 EOF"
 
-echo -e "${YELLOW}🔄 Перезапуск системных служб...${NC}"
 sudo systemctl daemon-reload
 sudo systemctl enable ustago
 sudo systemctl restart ustago
 
 echo -e "${GREEN}==============================================${NC}"
-echo -e "${GREEN}🎉 Деплой успешно завершен!                  ${NC}"
+echo -e "${GREEN}🎉 УСТАНОВКА ЗАВЕРШЕНА!                      ${NC}"
 echo -e "${GREEN}==============================================${NC}"
-echo -e "Бот запущен как сервис 'ustago'."
-echo -e "Проверить статус: ${YELLOW}sudo systemctl status ustago${NC}"
-echo -e "Проверить логи:   ${YELLOW}sudo journalctl -u ustago -f${NC}"
+echo -e "Админка: http://$SERVER_IP:3000"
+echo -e "API:     http://$SERVER_IP:8000"
 echo -e "=============================================="

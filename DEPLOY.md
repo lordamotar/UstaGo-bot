@@ -64,14 +64,46 @@ PYTHONPATH=. uv run python scripts/set_admin.py ЛОГИН ПАРОЛЬ
 
 ---
 
+## 🛡️ Безопасность и 2FA
+
+В системе настроена обязательная двухфакторная аутентификация через Telegram.
+
+1.  **Привязка ID**: При первом входе убедитесь, что ваш `telegram_id` в таблице `users` совпадает с вашим реальным ID.
+2.  **Если ID не совпадает**: Используйте консоль на сервере для принудительной привязки:
+    ```bash
+    cat <<EOF > fix_id.py
+    import asyncio
+    from database.engine import async_session_maker
+    from database.models import User
+    from sqlalchemy import update, select
+    async def fix():
+        async with async_session_maker() as s:
+            await s.execute(update(User).where(User.username == 'admin').values(telegram_id=ВАШ_ID))
+            await s.commit()
+    asyncio.run(fix())
+    EOF
+    uv run python fix_id.py && rm fix_id.py
+    ```
+
+## 📊 Мониторинг ошибок (Sentry)
+
+В бэкенд интегрирован Sentry. Для активации пропишите `SENTRY_DSN` в файле `.env`. Ошибки будут автоматически отправляться в панель мониторинга.
+
+---
+
 ## 🔍 Решение проблем
 
 ### ❌ Ошибка 401 в админке
 Убедитесь, что вы создали админа через `set_admin.py` прямо на сервере.
 
 ### ❌ Фронтенд не видит бэкенд (Network Error)
-Проверьте файл `admin_frontend/.env.local` на сервере. Там должен быть прописан правильный IP сервера:
-`NEXT_PUBLIC_API_URL=http://ВАШ_IP:8000/api/v1`
+Проверьте файл `admin_frontend/src/lib/api.ts` на сервере. В нем должен быть указан IP сервера:
+`const API_URL = 'http://ВАШ_IP:8000/api/v1';`
+После изменения **обязательно** перезапустите `./scripts/update.sh`.
+
+### ❌ Бот не отвечает
+Проверьте статус сервиса: `sudo systemctl status ustago`.
+Проверьте `BOT_TOKEN` в `.env`.
 
 ---
-*UstaGo - Масштабируемая платформа для рынка услуг.*
+*UstaGo - Платформа нового поколения для рынка услуг.*

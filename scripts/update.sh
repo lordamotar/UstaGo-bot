@@ -23,7 +23,15 @@ echo -e "${BLUE}==============================================${NC}"
 
 # 1. Получение изменений
 echo -e "${YELLOW}📥 1. Получение кода из Git...${NC}"
-git pull origin main || { echo -e "${RED}❌ Ошибка git pull${NC}"; exit 1; }
+# Сохраняем локальные изменения (api.ts, .env), если они есть
+git stash save "Autostash before update" --quiet
+git pull origin main --rebase || { 
+    echo -e "${RED}❌ Ошибка git pull. Проверьте конфликты вручную.${NC}"; 
+    git stash pop --quiet
+    exit 1; 
+}
+# Возвращаем локальные изменения
+git stash pop --quiet 2>/dev/null
 
 # 2. Обновление Python зависимостей
 echo -e "${YELLOW}🐍 2. Обновление Python зависимостей...${NC}"
