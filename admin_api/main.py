@@ -139,15 +139,17 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         
         print(f"DEBUG LOGIN: Attempt for username='{form_data.username}'")
         if not user:
-            print(f"DEBUG LOGIN: User '{form_data.username}' NOT FOUND in database")
-            raise HTTPException(
-                status_code=401,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            print(f"DEBUG LOGIN: User '{form_data.username}' NOT FOUND")
+            raise HTTPException(status_code=401, detail="Incorrect username or password")
         
-        is_valid = verify_password(form_data.password, user.hashed_password)
-        print(f"DEBUG LOGIN: User found. ID={user.id}, Role={user.role}")
+        # Печатаем длину, чтобы понять, нет ли лишних пробелов
+        received_pass = form_data.password
+        print(f"DEBUG LOGIN: Received password length: {len(received_pass)}")
+        # Печатаем первый и последний символ для верности (скрыто)
+        if len(received_pass) > 0:
+            print(f"DEBUG LOGIN: First char: '{received_pass[0]}', Last char: '{received_pass[-1]}'")
+
+        is_valid = verify_password(received_pass, user.hashed_password)
         print(f"DEBUG LOGIN: Password verification result: {is_valid}")
 
         if not is_valid:
