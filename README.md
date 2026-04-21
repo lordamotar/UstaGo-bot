@@ -51,8 +51,15 @@ chmod +x scripts/*.sh
 | **Admin Panel** | `pm2 logs ustago-frontend` | `pm2 restart ustago-frontend` |
 
 ### Рекомендованное обновление (Deploy)
+Запускайте после каждого `git push` из локальной среды:
 ```bash
 ./scripts/update.sh
+```
+
+### Сброс пароля администратора
+Если вы забыли пароль или не можете войти в админку:
+```bash
+PYTHONPATH=. uv run python scripts/set_admin.py <логин> <пароль>
 ```
 
 ---
