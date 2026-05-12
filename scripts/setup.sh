@@ -34,7 +34,7 @@ sudo npm install -g pm2
 # 4. Установка uv (менеджер Python)
 if ! command -v uv &> /dev/null; then
     echo -e "${YELLOW}✨ Шаг 3: Установка uv...${NC}"
-    curl -LsSf https://astral-sh/uv/install.sh | sh
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     source $HOME/.cargo/env
 else
     echo -e "${GREEN}✅ uv уже установлен.${NC}"
@@ -51,7 +51,7 @@ sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';" 2>/dev
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" 2>/dev/null
 
 # 6. Определение IP и настройка .env
-SERVER_IP=$(curl -s https://ifconfig.me)
+SERVER_IP=$(curl -4 -s https://ifconfig.me)
 if [ ! -f ".env" ]; then
     echo -e "${YELLOW}📝 Шаг 5: Настройка переменных окружения...${NC}"
     read -p "Введите BOT_TOKEN (от @BotFather): " USER_BOT_TOKEN
