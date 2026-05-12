@@ -31,11 +31,11 @@ if ! command -v node &> /dev/null; then
 fi
 sudo npm install -g pm2
 
-# 4. Установка uv (менеджер Python)
+export PATH="$HOME/.local/bin:$PATH"
+
 if ! command -v uv &> /dev/null; then
     echo -e "${YELLOW}✨ Шаг 3: Установка uv...${NC}"
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    source $HOME/.cargo/env
 else
     echo -e "${GREEN}✅ uv уже установлен.${NC}"
 fi

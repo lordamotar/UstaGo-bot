@@ -17,6 +17,8 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR/.."
 cd "$PROJECT_ROOT" || exit 1
 
+export PATH="$HOME/.local/bin:$PATH"
+
 echo -e "${BLUE}==============================================${NC}"
 echo -e "${BLUE}    🔄 Обновление системы UstaGo...          ${NC}"
 echo -e "${BLUE}==============================================${NC}"
