@@ -44,9 +44,11 @@ async def env(monkeypatch):
 
     api.app.dependency_overrides.clear()
     await client.aclose()
-    from database.models import AdminLog, MasterProfile, Order, TopUpRequest, Transaction
+    from database.models import AdminLog, Bid, MasterProfile, Order, TopUpRequest, Transaction
     async with async_session_maker() as s:
         ids = (await s.execute(select(User.id).where(User.telegram_id >= TG_BASE, User.telegram_id < TG_BASE + 10_000))).scalars().all()
+        order_ids = (await s.execute(select(Order.id).where(Order.client_id.in_(ids)))).scalars().all()
+        await s.execute(delete(Bid).where(Bid.order_id.in_(order_ids)))
         for model, col in ((AdminLog, AdminLog.admin_id), (Transaction, Transaction.user_id),
                            (TopUpRequest, TopUpRequest.user_id), (MasterProfile, MasterProfile.user_id),
                            (Order, Order.client_id)):
@@ -170,3 +172,133 @@ async def test_bulk_adjust_skips_masters_who_would_go_negative(env):
     assert r.json() == {"status": "success", "count": 1, "skipped": 1}
     assert await _points(env, rich) == 50
     assert await _points(env, poor) == 10
+
+
+# ---------------- admin panel: search / card / export / funnel / cancel ----------------
+
+async def _order(env, client_id, status=None, description="Течёт кран", budget=5000, category="Сантехник"):
+    from database.models import Category, Order, OrderStatus
+    async with env.maker() as s:
+        cat = (await s.execute(select(Category).where(Category.name == category))).scalar_one_or_none()
+        if not cat:
+            cat = Category(name=category)
+            s.add(cat)
+            await s.flush()
+        o = Order(client_id=client_id, category_id=cat.id, description=description, budget=budget,
+                  status=status or OrderStatus.NEW)
+        s.add(o)
+        await s.commit()
+        return o.id
+
+
+async def _bid(env, order_id, master_id, status="pending", price=3000):
+    from database.models import Bid
+    async with env.maker() as s:
+        b = Bid(order_id=order_id, master_id=master_id, suggested_price=price, status=status)
+        s.add(b)
+        await s.commit()
+        return b.id
+
+
+async def test_users_search_by_name_username_phone_and_id(env):
+    uid, tg = await _user(env, name="Зульфия Уникальная", username="zulf_unique", phone_number="+77001112233")
+    for q in ("Уникальн", "@zulf_unique", "zulf_uni", "7001112233", str(tg), str(uid)):
+        r = await env.client.get("/api/v1/users", params={"q": q})
+        assert r.status_code == 200, r.text
+        assert uid in [u["id"] for u in r.json()["items"]], q
+    miss = await env.client.get("/api/v1/users", params={"q": "нет-такого-zzz"})
+    assert miss.json()["total"] == 0
+
+
+async def test_users_filter_by_master_status(env):
+    from database.models import MasterStatus
+    pending_uid, _, _ = await _master(env, MasterStatus.PENDING, name="Ожидающий Мастер")
+    ok_uid, _, _ = await _master(env, MasterStatus.APPROVED, name="Одобренный Мастер")
+    r = await env.client.get("/api/v1/users", params={"master_status": "PENDING", "q": "Мастер"})
+    ids = [u["id"] for u in r.json()["items"]]
+    assert pending_uid in ids and ok_uid not in ids
+
+
+async def test_user_card_has_history(env):
+    from database.models import MasterStatus
+    uid, _, master_id = await _master(env, MasterStatus.APPROVED)
+    client_id, _ = await _user(env)
+    oid = await _order(env, client_id)
+    await _bid(env, oid, master_id, "accepted")
+    await env.client.post(f"/api/v1/masters/{master_id}/adjust-points", json={"amount": 100, "description": "тест"})
+
+    card = (await env.client.get(f"/api/v1/users/{uid}")).json()
+    assert card["points"] == 100
+    assert card["transactions"] and card["transactions"][0]["amount"] == 100
+    assert card["bids"][0]["order_id"] == oid
+    assert card["master_data"]["processed_orders"] == 1
+    assert (await env.client.get(f"/api/v1/users/{client_id}")).json()["orders"][0]["id"] == oid
+    assert (await env.client.get("/api/v1/users/999999999")).status_code == 404
+
+
+async def test_orders_search_and_filters(env):
+    client_id, _ = await _user(env, name="Клиент Поисковый")
+    oid = await _order(env, client_id, description="Уникальное описание qwerty123", category="Электрик-тест")
+    for q in ("qwerty123", "Электрик-тест", "Поисковый", f"#{oid}", str(oid)):
+        r = await env.client.get("/api/v1/orders", params={"q": q})
+        assert oid in [o["id"] for o in r.json()["items"]], q
+    r = await env.client.get("/api/v1/orders", params={"q": "qwerty123", "status": "CANCELLED"})
+    assert r.json()["total"] == 0
+    item = (await env.client.get("/api/v1/orders", params={"q": "qwerty123"})).json()["items"][0]
+    assert item["client_name"] == "Клиент Поисковый" and item["bids_count"] == 0
+
+
+async def test_admin_cancel_order_refunds_masters_and_notifies(env):
+    from database.models import MasterStatus, OrderStatus, Order, Transaction, TransactionType
+    from bot.services import billing
+    client_id, client_tg = await _user(env)
+    m_uid, m_tg, m_id = await _master(env, MasterStatus.APPROVED)
+    oid = await _order(env, client_id)
+    async with env.maker() as s:
+        await billing.credit(s, m_uid, 100, TransactionType.TOPUP, "init")
+        await billing.charge(s, m_uid, billing.BID_COST, TransactionType.CONTACT_FEE, "fee", order_id=oid)
+        await s.commit()
+    await _bid(env, oid, m_id)
+    assert await _points(env, m_uid) == 50
+
+    r = await env.client.post(f"/api/v1/orders/{oid}/cancel")
+    assert r.status_code == 200, r.text
+    assert await _points(env, m_uid) == 100
+    async with env.maker() as s:
+        assert (await s.get(Order, oid)).status == OrderStatus.CANCELLED
+    notified = {c.args[0] for c in env.notify.await_args_list}
+    assert {client_tg, m_tg} <= notified
+    assert (await env.client.post(f"/api/v1/orders/{oid}/cancel")).status_code == 400
+
+
+async def test_funnel_counts(env):
+    from database.models import MasterStatus, OrderStatus
+    client_id, _ = await _user(env)
+    _, _, m_id = await _master(env, MasterStatus.APPROVED)
+    before = (await env.client.get("/api/v1/stats/funnel", params={"days": 1})).json()
+    o1 = await _order(env, client_id)
+    o2 = await _order(env, client_id, status=OrderStatus.COMPLETED)
+    await _order(env, client_id, status=OrderStatus.CANCELLED)
+    await _bid(env, o1, m_id)
+    await _bid(env, o2, m_id, "accepted")
+    after = (await env.client.get("/api/v1/stats/funnel", params={"days": 1})).json()
+    assert after["created"] - before["created"] == 3
+    assert after["with_bids"] - before["with_bids"] == 2
+    assert after["completed"] - before["completed"] == 1
+    assert after["cancelled"] - before["cancelled"] == 1
+    assert after["median_first_bid_minutes"] is not None
+
+
+async def test_csv_export_escapes_formulas_and_respects_filters(env):
+    uid, _ = await _user(env, name="=HYPERLINK(\"http://evil\")", username="csv_user_x")
+    r = await env.client.get("/api/v1/users/export", params={"q": "csv_user_x"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    body = r.content.decode("utf-8-sig")
+    assert "'=HYPERLINK" in body and ";=HYPERLINK" not in body
+    assert body.count("\n") == 2  # header + one row
+
+    client_id, _ = await _user(env)
+    oid = await _order(env, client_id, description="export-marker-777")
+    o = await env.client.get("/api/v1/orders/export", params={"q": "export-marker-777"})
+    assert f"{oid};" in o.content.decode("utf-8-sig")

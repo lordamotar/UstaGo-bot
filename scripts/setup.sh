@@ -61,12 +61,13 @@ BOT_TOKEN=$USER_BOT_TOKEN
 DATABASE_URL=postgresql+asyncpg://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
 ADMIN_IDS=
 SENTRY_DSN=
+JWT_SECRET_KEY=$(openssl rand -hex 32)
+CORS_ORIGINS=http://$SERVER_IP:3000
 EOF
 fi
 
 # Настройка фронтенда
 echo "NEXT_PUBLIC_API_URL=http://$SERVER_IP:8000/api/v1" > admin_frontend/.env.local
-sed -i "s/127.0.0.1/$SERVER_IP/g" admin_frontend/src/lib/api.ts
 
 # 7. Установка зависимостей и сборка
 echo -e "${YELLOW}📦 Шаг 6: Установка зависимостей и сборка...${NC}"

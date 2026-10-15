@@ -35,6 +35,12 @@ git pull origin main --rebase || {
 # Возвращаем локальные изменения
 git stash pop --quiet 2>/dev/null
 
+# 1.5. JWT_SECRET_KEY обязателен для админ-API (добавляем в старые установки)
+if [ -f ".env" ] && ! grep -q "^JWT_SECRET_KEY=" .env; then
+    echo "JWT_SECRET_KEY=$(openssl rand -hex 32)" >> .env
+    echo -e "${YELLOW}🔑 Сгенерирован JWT_SECRET_KEY (все админы будут разлогинены один раз).${NC}"
+fi
+
 # 2. Обновление Python зависимостей
 echo -e "${YELLOW}🐍 2. Обновление Python зависимостей...${NC}"
 if command -v uv &> /dev/null; then

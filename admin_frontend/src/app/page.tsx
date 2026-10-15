@@ -19,6 +19,7 @@ import {
   Database
 } from 'lucide-react';
 import ChangePasswordModal from '@/components/ChangePasswordModal';
+import FunnelCard from '@/components/FunnelCard';
 import { 
   BarChart, 
   Bar, 
@@ -252,6 +253,8 @@ export default function DashboardPage() {
           subtitle={`Всего пополнений: ${stats.finance.total_deposits}`}
         />
       </div>
+
+      <FunnelCard />
 
       {/* Order Dynamics Chart */}
       <motion.div 
