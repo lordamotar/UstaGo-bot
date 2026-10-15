@@ -35,11 +35,11 @@ async def show_profile(message: Message):
         
         text = (
             f"👤 <b>Ваш профиль</b>\n"
-            f"Имя: {user.full_name}\n"
+            f"Имя: {esc(user.full_name)}\n"
             f"Рейтинг: {profile.rating:.1f} ⭐\n"
             f"Статус: {status_emoji}\n"
             f"Баланс: {points} баллов\n\n"
-            f"Описание: {profile.description or '—'}\n"
+            f"Описание: {esc(profile.description or '—')}\n"
             f"Стаж: {profile.experience or '—'}"
         )
         
@@ -64,7 +64,7 @@ async def process_edit_name(message: Message, state: FSMContext):
         await session.commit()
     
     await state.clear()
-    await message.answer(f"✅ Имя успешно изменено на: <b>{message.text}</b>", parse_mode="HTML")
+    await message.answer(f"✅ Имя успешно изменено на: <b>{esc(message.text)}</b>", parse_mode="HTML")
     await show_profile(message)
 
 @router.callback_query(F.data == "edit_categories")
@@ -273,7 +273,7 @@ async def show_available_orders(message: Message):
     text = f"🔄 <b>Доступные заказы ({len(orders)}):</b>\n\n"
     keyboard = []
     for o in orders:
-        text += f"📦 <b>{o.category.name}</b>\n💰 Бюджет: {o.budget or 'Договорная'}\n📍 {o.district.name if o.district else '—'}\n\n"
+        text += f"📦 <b>{esc(o.category.name)}</b>\n💰 Бюджет: {o.budget or 'Договорная'}\n📍 {esc(o.district.name if o.district else '—')}\n\n"
         keyboard.append([InlineKeyboardButton(text=f"📥 Заказ №{o.id}", callback_data=f"master_view_order:{o.id}")])
     await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
@@ -283,7 +283,7 @@ async def show_active_orders(message: Message):
         stmt = select(MasterProfile).join(User).where(User.telegram_id == message.chat.id)
         master = (await session.execute(stmt)).scalar_one_or_none()
         if not master: return
-        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == 'accepted', Order.status == OrderStatus.ACTIVE).options(selectinload(Order.category), selectinload(Order.client)).order_by(Order.created_at.desc())
+        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.ACTIVE).options(selectinload(Order.category), selectinload(Order.client)).order_by(Order.created_at.desc())
         orders = (await session.execute(stmt)).scalars().all()
     if not orders:
         await message.answer("⏳ У вас пока нет активных заказов.", reply_markup=get_orders_menu())
@@ -291,11 +291,11 @@ async def show_active_orders(message: Message):
     text = "⚡️ <b>Заказы в работе:</b>\n"
     keyboard = []
     for o in orders:
-        link = f" (@{o.client.username})" if o.client.username else ""
+        link = f" (@{esc(o.client.username)})" if o.client.username else ""
         text += (
-            f"\n🏷 <b>{o.category.name}</b>\n"
-            f"👤 Клиент: {o.client.full_name}{link}\n"
-            f"📱 Телефон: <code>{o.client.phone_number}</code>\n"
+            f"\n🏷 <b>{esc(o.category.name)}</b>\n"
+            f"👤 Клиент: {esc(o.client.full_name)}{link}\n"
+            f"📱 Телефон: <code>{esc(o.client.phone_number)}</code>\n"
         )
         keyboard.append([InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"master_request_complete:{o.id}")])
     
@@ -334,14 +334,14 @@ async def show_completed_orders(message: Message):
         stmt = select(MasterProfile).join(User).where(User.telegram_id == message.chat.id)
         master = (await session.execute(stmt)).scalar_one_or_none()
         if not master: return
-        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == 'accepted', Order.status == OrderStatus.COMPLETED).options(selectinload(Order.category)).order_by(Order.created_at.desc())
+        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.COMPLETED).options(selectinload(Order.category)).order_by(Order.created_at.desc())
         orders = (await session.execute(stmt)).scalars().all()
     if not orders:
         await message.answer("✅ У вас пока нет выполненных заказов.")
         return
     text = "✅ <b>История завершенных заказов:</b>\n"
     for o in orders:
-        text += f"\n📦 <b>{o.category.name}</b>\n📅 {o.created_at.strftime('%d.%m.%Y')}\n"
+        text += f"\n📦 <b>{esc(o.category.name)}</b>\n📅 {o.created_at.strftime('%d.%m.%Y')}\n"
     await message.answer(text, parse_mode="HTML")
 
 # --- ORDER DETAILS ---
@@ -365,10 +365,10 @@ async def master_view_order_callback(callback: CallbackQuery):
             pass
             
     text = (
-        f"📦 <b>Заказ №{order.id}: {order.category.name}</b>\n\n"
-        f"📝 {order.description}\n"
+        f"📦 <b>Заказ №{order.id}: {esc(order.category.name)}</b>\n\n"
+        f"📝 {esc(order.description)}\n"
         f"💰 Бюджет: {order.budget or 'Договорная'}\n"
-        f"📍 Район: {order.district.name if order.district else '—'}\n\n"
+        f"📍 Район: {esc(order.district.name if order.district else '—')}\n\n"
         f"🏷️ <b>Стоимость отклика: 50 баллов.</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -381,6 +381,8 @@ async def master_view_order_callback(callback: CallbackQuery):
 from bot.services.billing import BID_COST
 from bot.services.bidding import bid_block_reason, place_bid
 from bot.utils.parsing import parse_amount
+from bot.utils.text import esc
+from database.models import BidStatus
 
 @router.callback_query(F.data.startswith("start_bid:"))
 async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
@@ -452,14 +454,14 @@ async def show_stats_handler(message: Message):
         completed = (await session.execute(
             select(func.count(Order.id))
             .join(Bid)
-            .where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.COMPLETED)
+            .where(Bid.master_id == master_id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.COMPLETED)
         )).scalar() or 0
         
         # 2. Count active orders
         active = (await session.execute(
             select(func.count(Order.id))
             .join(Bid)
-            .where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.ACTIVE)
+            .where(Bid.master_id == master_id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.ACTIVE)
         )).scalar() or 0
         
         # 3. Calculate total lifetime points (non-negative transactions)
@@ -503,7 +505,7 @@ async def show_rating_handler(message: Message):
         await message.answer("⭐ Еще нет отзывов.")
         return
     text = f"⭐ <b>Рейтинг: {avg:.1f}/5.0</b>\n\n💬 <b>Последние отзывы:</b>\n"
-    for r in reviews[:10]: text += f"\n{'⭐'*r.rating} ({r.created_at.strftime('%d.%m.%Y')})\n<i>«{r.comment}»</i>\n"
+    for r in reviews[:10]: text += f"\n{'⭐'*r.rating} ({r.created_at.strftime('%d.%m.%Y')})\n<i>«{esc(r.comment)}»</i>\n"
     await message.answer(text, parse_mode="HTML")
 
 @router.message(F.text == "💰 Баланс")
@@ -601,7 +603,7 @@ async def show_transactions_handler(message: Message):
     for t in txs:
         sign = "+" if t.amount > 0 else ""
         date = t.created_at.strftime("%d.%m %H:%M")
-        text += f"\n📅 {date} | <b>{sign}{t.amount}</b>\n└ {t.description or '—'}"
+        text += f"\n📅 {date} | <b>{sign}{t.amount}</b>\n└ {esc(t.description or '—')}"
         
     await message.answer(text, parse_mode="HTML")
 

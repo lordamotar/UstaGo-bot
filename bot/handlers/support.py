@@ -10,6 +10,7 @@ from bot.keyboards.admin import get_admin_main_menu
 from bot.core.config import config
 from sqlalchemy import select, and_, update
 from datetime import datetime
+from bot.utils.text import esc
 
 router = Router()
 
@@ -114,7 +115,7 @@ async def handle_active_chat(message: Message, state: FSMContext):
         prefix = "👤 <b>Пользователь:</b>\n" if user_tid == chat.user_tid else "👨‍✈️ <b>Админ:</b>\n"
         
         try:
-            await message.bot.send_message(target_tid, f"{prefix}{message.text}", parse_mode="HTML")
+            await message.bot.send_message(target_tid, f"{prefix}{esc(message.text)}", parse_mode="HTML")
         except Exception as e:
             await message.answer(f"⚠️ Сообщение не доставлено: собеседник недоступен.")
 
@@ -224,7 +225,7 @@ async def process_admin_reply(message: Message, state: FSMContext):
         await session.commit()
 
     try:
-        await message.bot.send_message(user_tid, f"📨 <b>Ответ от администрации:</b>\n\n{message.text}", parse_mode="HTML")
+        await message.bot.send_message(user_tid, f"📨 <b>Ответ от администрации:</b>\n\n{esc(message.text)}", parse_mode="HTML")
         await message.answer(f"✅ Ответ на обращение #{ticket_id} успешно доставлен.")
     except Exception as e:
         await message.answer(f"❌ Ошибка отправки: {e}")

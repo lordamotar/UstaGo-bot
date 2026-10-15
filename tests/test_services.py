@@ -390,3 +390,32 @@ async def test_parallel_bids_cannot_overdraw_the_balance():
             await s.execute(delete(User).where(User.id.in_([client_id, master_id])))
             await s.commit()
         await engine.dispose()
+
+
+# ---------------- text escaping / bid status constants ----------------
+
+def test_esc_neutralises_html_and_handles_none():
+    from bot.utils.text import esc
+    assert esc("<b>x</b> & <a href='x'>") == "&lt;b&gt;x&lt;/b&gt; &amp; &lt;a href='x'&gt;"
+    assert esc(None) == ""
+    assert esc(123) == "123"
+
+
+def test_bid_status_literals_are_not_used_in_code():
+    """Bid.status must be referenced via BidStatus.*, a typo in a string literal silently breaks the logic."""
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent
+    pat = re.compile(r"""status\s*(==|!=|=)\s*['"](pending|accepted|rejected)['"]""")
+    offenders = []
+    for folder in ("bot", "admin_api"):
+        for path in (root / folder).rglob("*.py"):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pat.search(line):
+                    offenders.append(f"{path.relative_to(root)}:{n}: {line.strip()}")
+    assert not offenders, "\n".join(offenders)
+
+
+def test_bid_default_status_is_pending():
+    from database.models import Bid, BidStatus
+    assert Bid.__table__.c.status.default.arg == BidStatus.PENDING == "pending"

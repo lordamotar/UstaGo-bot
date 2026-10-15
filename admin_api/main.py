@@ -26,6 +26,7 @@ import secrets
 import hmac
 import logging
 import time
+from database.models import BidStatus
 
 # --- SENTRY INITIALIZATION ---
 if config.SENTRY_DSN:
@@ -474,13 +475,13 @@ async def get_orders_chart_data(
                 .join(Bid, Bid.order_id == Order.id)\
                 .join(MasterProfile, Bid.master_id == MasterProfile.id)\
                 .join(User, MasterProfile.user_id == User.id)\
-                .where(*where_clause, Bid.status == 'accepted')\
+                .where(*where_clause, Bid.status == BidStatus.ACCEPTED)\
                 .group_by(func.date(Order.created_at), User.full_name)
         else:
             # Default: split by 'Total' or apply master_id filter
             stmt = select(func.date(Order.created_at).label("day"), func.count(Order.id))
             if master_id:
-                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == 'accepted')
+                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == BidStatus.ACCEPTED)
             stmt = stmt.where(*where_clause).group_by(func.date(Order.created_at))
 
         results = (await session.execute(stmt)).all()
@@ -611,7 +612,7 @@ def _user_row(u: User) -> dict:
             "categories": [c.name for c in u.master_profile.categories],
             "districts": [d.name for d in u.master_profile.districts],
             "total_bids": len(bids),
-            "processed_orders": sum(1 for b in bids if b.status == "accepted"),
+            "processed_orders": sum(1 for b in bids if b.status == BidStatus.ACCEPTED),
             "status": u.master_profile.status,
             "rating": u.master_profile.rating,
             "is_accredited": u.master_profile.is_accredited,

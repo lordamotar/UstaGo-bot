@@ -20,6 +20,7 @@ from bot.keyboards.admin import (
 from bot.states import AdminStates, BroadcastStates, UserManagementStates, PaymentSettingsStates
 from aiogram.fsm.context import FSMContext
 from datetime import datetime, timedelta, timezone
+from bot.utils.text import esc
 
 router = Router()
 
@@ -112,7 +113,7 @@ async def list_all_orders(message: Message):
     text = "📋 <b>Последние заказы:</b>\n"
     for o in orders:
         st = "🆕" if o.status == OrderStatus.NEW else "⏳"
-        text += f"\n{st} #{o.id} - {o.category.name}\n📍 {o.district.name if o.district else '—'} | 💰 {o.budget or 'Нет'}"
+        text += f"\n{st} #{o.id} - {esc(o.category.name)}\n📍 {esc(o.district.name if o.district else '—')} | 💰 {o.budget or 'Нет'}"
     
     await message.answer(text, parse_mode="HTML")
 
@@ -159,12 +160,12 @@ async def view_master_details(callback: CallbackQuery):
     acc_status = "✅ ДА" if profile.is_accredited else "❌ НЕТ"
     text = (
         f"👷 <b>Мастер #{profile.id}</b>\n\n"
-        f"👤 Имя: {profile.user.full_name}\n"
+        f"👤 Имя: {esc(profile.user.full_name)}\n"
         f"📅 Стаж: {profile.experience or '—'}\n"
-        f"🗂 Категории: {', '.join([c.name for c in profile.categories])}\n"
-        f"💬 О себе: {profile.description or '—'}\n"
+        f"🗂 Категории: {esc(', '.join([c.name for c in profile.categories]))}\n"
+        f"💬 О себе: {esc(profile.description or '—')}\n"
         f"🏅 Аккредитация: {acc_status}\n"
-        f"TG: @{profile.user.username or 'no_user'} (<code>{profile.user.telegram_id}</code>)"
+        f"TG: @{esc(profile.user.username or 'no_user')} (<code>{profile.user.telegram_id}</code>)"
     )
     
     kb_list = [
@@ -229,7 +230,7 @@ async def approve_master(callback: CallbackQuery):
             await callback.bot.send_message(
                 result.inviter_telegram_id,
                 f"🎁 <b>Бонус за реферала!</b>\n\n"
-                f"Приглашенный вами мастер <b>{full_name}</b> успешно прошел проверку.\n"
+                f"Приглашенный вами мастер <b>{esc(full_name)}</b> успешно прошел проверку.\n"
                 f"Вам начислено <b>{result.inviter_bonus} баллов</b>!",
                 parse_mode="HTML"
             )
@@ -300,7 +301,7 @@ async def admin_refill_points(message: Message):
         await log_admin_action(session, message.from_user.id, "REFILL_POINTS", f"Refilled {amount} to user {user.full_name} ({user.id})")
         await session.commit()
         
-    await message.answer(f"✅ Баланс пользователя <b>{user.full_name}</b> пополнен на <b>{amount}</b> баллов.", parse_mode="HTML")
+    await message.answer(f"✅ Баланс пользователя <b>{esc(user.full_name)}</b> пополнен на <b>{amount}</b> баллов.", parse_mode="HTML")
     try:
         await message.bot.send_message(target_id, f"💰 Ваш баланс пополнен администратором на <b>{amount}</b> баллов!", parse_mode="HTML")
     except Exception:
@@ -553,7 +554,7 @@ async def process_user_ban_search(message: Message, state: FSMContext):
         status = f"🚫 Забанен до {user.banned_until.strftime('%d.%m.%Y %H:%M')}"
         
     text = (
-        f"👤 <b>Управление пользователем:</b> {user.full_name}\n"
+        f"👤 <b>Управление пользователем:</b> {esc(user.full_name)}\n"
         f"🆔 ID записи: {user.id}\n"
         f"📱 TG ID: <code>{user.telegram_id}</code>\n"
         f"📊 Статус: {status}\n\n"
@@ -670,7 +671,7 @@ async def process_crypto_address(message: Message, state: FSMContext):
         await log_admin_action(session, message.from_user.id, "EDIT_CRYPTO_ADDRESS", f"New address: {message.text}")
         await session.commit()
     await state.clear()
-    await message.answer(f"✅ Адрес криптовалюты обновлен на: <code>{message.text}</code>", parse_mode="HTML")
+    await message.answer(f"✅ Адрес криптовалюты обновлен на: <code>{esc(message.text)}</code>", parse_mode="HTML")
     await cmd_payment_settings(message)
 
 @router.message(PaymentSettingsStates.entering_bank_details)
@@ -706,7 +707,7 @@ async def list_topup_requests(callback: CallbackQuery):
     for req in requests:
         text = (
             f"💰 <b>Заявка на пополнение #{req.id}</b>\n\n"
-            f"👤 От: {req.user.full_name} (<code>{req.user.telegram_id}</code>)\n"
+            f"👤 От: {esc(req.user.full_name)} (<code>{req.user.telegram_id}</code>)\n"
             f"💵 Сумма: <b>{req.amount}</b> баллов\n"
             f"🔹 Метод: {req.method}\n"
             f"📅 Дата: {req.created_at.strftime('%d.%m.%Y %H:%M')}"

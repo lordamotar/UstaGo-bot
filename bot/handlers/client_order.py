@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from bot.keyboards.client import get_inline_categories, get_inline_districts, get_order_confirmation_keyboard
 from bot.core.config import config
+from bot.utils.text import esc
 
 router = Router()
 
@@ -139,10 +140,10 @@ async def finish_order_photos(message: Message, state: FSMContext):
     photos_count = len(data.get("order_photos", []))
     text = (
         "📊 <b>Проверьте вашу заявку:</b>\n\n"
-        f"🏷️ Категория: {cat.name}\n"
-        f"📝 Описание: {data['description']}\n"
+        f"🏷️ Категория: {esc(cat.name)}\n"
+        f"📝 Описание: {esc(data['description'])}\n"
         f"💰 Бюджет: {data['budget_text']}\n"
-        f"📍 Район: {dist.name}\n"
+        f"📍 Район: {esc(dist.name)}\n"
         f"🖼 Фото: {photos_count if photos_count > 0 else 'Нет'}\n\n"
         "<b>Опубликовать?</b>"
     )
@@ -226,10 +227,10 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
                     continue
                     
                 master_text = (
-                    f"🆕 <b>Новый заказ: {cat.name}</b>\n\n"
-                    f"📝 {data['description']}\n"
+                    f"🆕 <b>Новый заказ: {esc(cat.name)}</b>\n\n"
+                    f"📝 {esc(data['description'])}\n"
                     f"💰 Бюджет: {data['budget'] or 'Договорная'}\n"
-                    f"📍 Район: {dist.name}"
+                    f"📍 Район: {esc(dist.name)}"
                     f"{photo_mark}"
                 )
                 

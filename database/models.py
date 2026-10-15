@@ -21,6 +21,14 @@ class OrderStatus(enum.Enum):
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
 
+class BidStatus:
+    """Allowed values of Bid.status (plain strings in the DB; use these constants, never literals)."""
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    ALL = (PENDING, ACCEPTED, REJECTED)
+
+
 class TransactionType(enum.Enum):
     REFERRAL_BONUS = "REFERRAL_BONUS"
     CONTACT_FEE = "CONTACT_FEE"
@@ -151,7 +159,7 @@ class Bid(Base):
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
     master_id: Mapped[int] = mapped_column(ForeignKey("master_profiles.id"))
     suggested_price: Mapped[Optional[int]] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String(50), default="pending")
+    status: Mapped[str] = mapped_column(String(50), default=BidStatus.PENDING)
     message: Mapped[Optional[str]] = mapped_column(Text)
     
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

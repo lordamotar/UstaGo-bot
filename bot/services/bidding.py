@@ -9,6 +9,7 @@ from bot.services import billing
 from database.models import (
     Bid, MasterStatus, Order, OrderStatus, TransactionType, User,
 )
+from database.models import BidStatus
 
 
 @dataclass
@@ -38,7 +39,7 @@ async def bid_block_reason(session, user: Optional[User], order_id: int) -> Opti
     if duplicate:
         return "⚠️ Вы уже откликались на этот заказ."
     active_bids = (await session.execute(
-        select(func.count(Bid.id)).where(Bid.order_id == order_id, Bid.status != "rejected")
+        select(func.count(Bid.id)).where(Bid.order_id == order_id, Bid.status != BidStatus.REJECTED)
     )).scalar() or 0
     if active_bids >= config.MAX_BIDS_PER_ORDER:
         return "⚠️ К этой заявке уже набрано максимальное число откликов."

@@ -7,6 +7,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from bot.services import billing
 from database.models import Bid, MasterProfile, Order, OrderStatus
+from database.models import BidStatus
 
 
 @dataclass
@@ -37,7 +38,7 @@ async def cancel_order(session, order_id: int, reason: str = "отменён к�
     notices: List[CancelNotice] = []
     seen = set()
     for bid in order.bids:
-        if bid.status == "rejected":
+        if bid.status == BidStatus.REJECTED:
             continue
         master_user = bid.master.user
         if master_user.id in seen:

@@ -7,6 +7,7 @@ from bot.keyboards.client import get_payment_methods_keyboard
 from bot.states import TopUpStates
 from bot.core.config import config
 from sqlalchemy import select
+from bot.utils.text import esc
 
 router = Router()
 
@@ -124,7 +125,7 @@ async def process_refill_receipt(message: Message, state: FSMContext):
     
     admin_notif = (
         f"💰 <b>Новая заявка на пополнение #{req_id}</b>\n\n"
-        f"👤 От: {user.full_name} (<code>{user.telegram_id}</code>)\n"
+        f"👤 От: {esc(user.full_name)} (<code>{user.telegram_id}</code>)\n"
         f"💵 Сумма: <b>{amount}</b>\n"
         f"🔹 Метод: {method}\n"
     )

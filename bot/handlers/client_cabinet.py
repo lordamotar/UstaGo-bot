@@ -6,6 +6,8 @@ from database.engine import async_session_maker
 from database.models import User, Order, Bid, OrderStatus, MasterProfile, Review
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload, joinedload
+from bot.utils.text import esc
+from database.models import BidStatus
 
 router = Router()
 
@@ -19,8 +21,8 @@ async def show_client_profile(message: Message):
     
     text = (
         f"👤 <b>Ваш профиль клиента</b>\n\n"
-        f"Имя: {user.full_name}\n"
-        f"Телефон: {user.phone_number or '—'}\n"
+        f"Имя: {esc(user.full_name)}\n"
+        f"Телефон: {esc(user.phone_number or '—')}\n"
         # f"Баланс: {user.points} баллов\n"
     )
     from bot.core.config import config
@@ -61,7 +63,7 @@ async def show_my_orders(message: Message):
     if orders_active:
         text = "⚡️ <b>Активные заказы (в работе):</b>\n"
         for o in orders_active:
-            text += f"\n📦 <b>{o.category.name}</b>\n📝 {o.description[:50]}...\n"
+            text += f"\n📦 <b>{esc(o.category.name)}</b>\n📝 {esc(o.description[:50])}...\n"
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"client_complete_order:{o.id}")],
                 [InlineKeyboardButton(text=f"❌ Отменить заказ №{o.id}", callback_data=f"client_cancel_order:{o.id}")]
@@ -71,7 +73,7 @@ async def show_my_orders(message: Message):
     if orders_new:
         text = "🆕 <b>Новые заявки (сбор откликов):</b>\n"
         for o in orders_new:
-            text += f"\n📦 <b>{o.category.name}</b>\n📝 {o.description[:50]}...\n"
+            text += f"\n📦 <b>{esc(o.category.name)}</b>\n📝 {esc(o.description[:50])}...\n"
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=f"🔍 Детали заявки №{o.id}", callback_data=f"client_view_order:{o.id}")],
                 [InlineKeyboardButton(text=f"❌ Отменить заявку №{o.id}", callback_data=f"client_cancel_order:{o.id}")]
@@ -106,17 +108,17 @@ async def process_view_order(message: Message, order_id: int):
         
     status_icon = "🟢" if order.status == OrderStatus.ACTIVE else "⚪️" if order.status == OrderStatus.NEW else "✅" if order.status == OrderStatus.COMPLETED else "❌"
     text = f"{status_icon} <b>Заявка №{order.id}</b>\n"
-    text += f"📝 Описание: {order.description}\n"
+    text += f"📝 Описание: {esc(order.description)}\n"
     text += f"💰 Бюджет: {order.budget or 'Договорная'}\n\n"
     
     if order.status == OrderStatus.ACTIVE:
-        accepted_bid = next((b for b in order.bids if b.status == "accepted"), None)
+        accepted_bid = next((b for b in order.bids if b.status == BidStatus.ACCEPTED), None)
         if accepted_bid:
             m_user = accepted_bid.master.user
             text += (
-                f"✅ <b>Мастер выбран:</b> {m_user.full_name}\n"
-                f"📱 Телефон: <code>{m_user.phone_number}</code>\n"
-                f"Telegram: @{m_user.username if m_user.username else '—'}\n\n"
+                f"✅ <b>Мастер выбран:</b> {esc(m_user.full_name)}\n"
+                f"📱 Телефон: <code>{esc(m_user.phone_number)}</code>\n"
+                f"Telegram: @{esc(m_user.username if m_user.username else '—')}\n\n"
                 "Выполняется работа над заказом."
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -134,13 +136,13 @@ async def process_view_order(message: Message, order_id: int):
         await message.answer(text, parse_mode="HTML")
         
         for bid in order.bids:
-            if order.status == OrderStatus.NEW and bid.status != "rejected":
+            if order.status == OrderStatus.NEW and bid.status != BidStatus.REJECTED:
                 m_user = bid.master.user
                 acc_badge = "🏅 " if bid.master.is_accredited else ""
                 b_text = (
-                    f"👷 <b>Мастер:</b> {acc_badge}{m_user.full_name} ({bid.master.rating}⭐)\n"
+                    f"👷 <b>Мастер:</b> {acc_badge}{esc(m_user.full_name)} ({bid.master.rating}⭐)\n"
                     f"🏷️ Цена: {bid.suggested_price or 'Договорная'}\n"
-                    f"📩 Сообщение: {bid.message or '—'}"
+                    f"📩 Сообщение: {esc(bid.message or '—')}"
                 )
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="👷 Профиль мастера", callback_data=f"client_view_master:{bid.master_id}:{order_id}")],
@@ -158,7 +160,7 @@ async def client_reject_bid_callback(callback: CallbackQuery):
         stmt = select(Bid).options(joinedload(Bid.master).joinedload(MasterProfile.user)).where(Bid.id == bid_id)
         bid = (await session.execute(stmt)).scalar_one_or_none()
         if bid:
-            bid.status = "rejected"
+            bid.status = BidStatus.REJECTED
             master_tid = bid.master.user.telegram_id
             order_id = bid.order_id
             await session.commit()
@@ -203,17 +205,17 @@ async def client_view_master_details(callback: CallbackQuery):
         
     acc_badge = "🏅 " if profile.is_accredited else ""
     text = (
-        f"👷 <b>Профиль мастера: {acc_badge}{profile.user.full_name}</b>\n\n"
+        f"👷 <b>Профиль мастера: {acc_badge}{esc(profile.user.full_name)}</b>\n\n"
         f"⭐ Рейтинг: {profile.rating:.1f} / 5.0\n"
         f"⏳ Стаж: {profile.experience or '—'}\n\n"
-        f"📝 <b>О себе:</b>\n{profile.description or '—'}\n\n"
+        f"📝 <b>О себе:</b>\n{esc(profile.description or '—')}\n\n"
     )
     
     if reviews:
         text += "💬 <b>Последние отзывы:</b>\n"
         for r in reviews:
             stars = "⭐" * r.rating
-            text += f"\n{stars}\n«{r.comment}»\n"
+            text += f"\n{stars}\n«{esc(r.comment)}»\n"
     else:
         text += "\n💬 Отзывов пока нет.\n"
         
@@ -271,16 +273,16 @@ async def process_accept_bid(message: Message, bid_id: int):
         
         # Update statuses
         order.status = OrderStatus.ACTIVE
-        bid.status = "accepted"
+        bid.status = BidStatus.ACCEPTED
         
         await session.commit()
     
     # Notify Client
     client_text = (
-        f"✅ <b>Вы приняли отклик мастера {master_user.full_name}!</b>\n\n"
+        f"✅ <b>Вы приняли отклик мастера {esc(master_user.full_name)}!</b>\n\n"
         f"📱 Контакты мастера:\n"
-        f"Телефон: <code>{master_user.phone_number}</code>\n"
-        f"Telegram: @{master_user.username if master_user.username else '—'}\n\n"
+        f"Телефон: <code>{esc(master_user.phone_number)}</code>\n"
+        f"Telegram: @{esc(master_user.username if master_user.username else '—')}\n\n"
         "Свяжитесь с мастером для уточнения деталей."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -292,13 +294,13 @@ async def process_accept_bid(message: Message, bid_id: int):
     # Notify Master with FULL order details
     master_text = (
         f"🎉 <b>Клиент принял ваш отклик на заказ №{order.id}!</b>\n\n"
-        f"📦 <b>Заказ №{order.id}: {order.category.name}</b>\n\n"
-        f"📝 {order.description}\n"
+        f"📦 <b>Заказ №{order.id}: {esc(order.category.name)}</b>\n\n"
+        f"📝 {esc(order.description)}\n"
         f"💰 Бюджет: {order.budget or 'Договорная'}\n"
-        f"📍 Район: {order.district.name if order.district else '—'}\n"
-        f"👤 Клиент: {client_user.full_name}\n"
-        f"📱 Телефон: <code>{client_user.phone_number}</code>\n"
-        f"Telegram: @{client_user.username if client_user.username else '—'}\n\n"
+        f"📍 Район: {esc(order.district.name if order.district else '—')}\n"
+        f"👤 Клиент: {esc(client_user.full_name)}\n"
+        f"📱 Телефон: <code>{esc(client_user.phone_number)}</code>\n"
+        f"Telegram: @{esc(client_user.username if client_user.username else '—')}\n\n"
         "🟢 <b>Свяжитесь с клиентом прямо сейчас!</b>"
     )
     await message.bot.send_message(master_user.telegram_id, master_text, parse_mode="HTML")
@@ -321,7 +323,7 @@ async def complete_order_handler(callback: CallbackQuery, state: FSMContext):
             return
 
         # Only the client who owns the order or the accepted master may complete it
-        _acc = next((b for b in order.bids if b.status == "accepted"), None)
+        _acc = next((b for b in order.bids if b.status == BidStatus.ACCEPTED), None)
         _allowed = {order.client.telegram_id}
         if _acc:
             _allowed.add(_acc.master.user.telegram_id)
@@ -333,7 +335,7 @@ async def complete_order_handler(callback: CallbackQuery, state: FSMContext):
         order.status = OrderStatus.COMPLETED
         
         # Find accepted master
-        accepted_bid = next((b for b in order.bids if b.status == "accepted"), None)
+        accepted_bid = next((b for b in order.bids if b.status == BidStatus.ACCEPTED), None)
         master_user = accepted_bid.master.user if accepted_bid else None
         client_user = order.client
         
@@ -401,7 +403,7 @@ async def client_confirm_cancel_order_callback(callback: CallbackQuery):
     await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
 
     for n in notices:
-        status_desc = "был в работе" if n.bid_status == "accepted" else "был предложен"
+        status_desc = "был в работе" if n.bid_status == BidStatus.ACCEPTED else "был предложен"
         refund_line = f"💰 <b>{n.refunded} баллов возвращены на ваш баланс.</b>\n\n" if n.refunded else "\n"
         try:
             await callback.bot.send_message(
@@ -449,7 +451,7 @@ async def handle_review_comment(message: Message, state: FSMContext):
         # Find the master and his profile
         stmt = select(Bid).options(
             joinedload(Bid.master).joinedload(MasterProfile.user)
-        ).where(Bid.order_id == order_id, Bid.status == 'accepted')
+        ).where(Bid.order_id == order_id, Bid.status == BidStatus.ACCEPTED)
         res = await session.execute(stmt)
         bid = res.scalar_one_or_none()
         
