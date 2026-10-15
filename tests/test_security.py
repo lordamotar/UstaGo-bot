@@ -63,3 +63,10 @@ async def test_effective_role_defaults_to_superadmin():
     assert security.effective_role(U()) == "superadmin"
     U.admin_role = "finance"
     assert security.effective_role(U()) == "finance"
+
+
+async def test_api_lifespan_starts_and_stops_cleanly():
+    """Replaces the deprecated on_event startup hook: the backup task must start and be cancelled on shutdown."""
+    from admin_api import main as api
+    async with api.app.router.lifespan_context(api.app):
+        pass

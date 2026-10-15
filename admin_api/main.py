@@ -23,6 +23,7 @@ import admin_api.backups as backup_util
 from bot.services import billing
 from bot.utils.text import esc
 import asyncio
+from contextlib import asynccontextmanager
 import sentry_sdk
 import random
 import secrets
@@ -42,7 +43,18 @@ if config.SENTRY_DSN:
         enable_tracing=True,
     )
 
-app = FastAPI(title="UstaGo Admin API")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    backup_task = asyncio.create_task(scheduled_backups())  # daily backups
+    try:
+        yield
+    finally:
+        backup_task.cancel()
+        await asyncio.gather(backup_task, return_exceptions=True)
+        await bot_instance.session.close()
+
+
+app = FastAPI(title="UstaGo Admin API", lifespan=lifespan)
 bot_instance = Bot(token=config.BOT_TOKEN)
 
 async def notify_user(telegram_id: int, message: str) -> bool:
@@ -70,11 +82,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.on_event("startup")
-async def startup_event():
-    # Start background task for daily backups
-    asyncio.create_task(scheduled_backups())
 
 async def scheduled_backups():
     """Background task to create a backup every 24 hours."""
