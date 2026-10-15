@@ -71,6 +71,54 @@ async def unban_worker(bot: Bot):
             
         await asyncio.sleep(600) # Check every 10 minutes
 
+async def order_expiry_worker(bot: Bot):
+    """Closes NEW orders nobody was chosen for within ORDER_TTL_HOURS, refunds bid fees, notifies everyone."""
+    from bot.services.orders import expire_stale_orders
+    while True:
+        try:
+            if config.ORDER_TTL_HOURS > 0:
+                async with async_session_maker() as session:
+                    expired = await expire_stale_orders(session, config.ORDER_TTL_HOURS)
+                    await session.commit()
+                for item in expired:
+                    logger.info(f"Order #{item.order_id} expired and was closed automatically.")
+                    try:
+                        await bot.send_message(
+                            item.client_telegram_id,
+                            f"⌛ <b>Заявка №{item.order_id} закрыта автоматически.</b>\n"
+                            f"Вы не выбрали мастера в течение {config.ORDER_TTL_HOURS} ч. "
+                            "Если задача всё ещё актуальна — создайте новую заявку.",
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not notify client {item.client_telegram_id}: {e}")
+                    for n in item.notices:
+                        refund = f"\n💰 <b>{n.refunded} баллов возвращены на ваш баланс.</b>" if n.refunded else ""
+                        try:
+                            await bot.send_message(
+                                n.master_telegram_id,
+                                f"⌛ Заявка №{item.order_id} закрыта: срок ожидания истёк.{refund}",
+                                parse_mode="HTML",
+                            )
+                        except Exception as e:
+                            logger.warning(f"Could not notify master {n.master_telegram_id}: {e}")
+        except Exception:
+            logger.exception("Error in order_expiry_worker")
+        await asyncio.sleep(30 * 60)  # every 30 minutes
+
+async def build_storage():
+    """FSM storage: Redis when available (state survives restarts), otherwise in-memory with a warning."""
+    try:
+        from redis.asyncio import Redis
+        from aiogram.fsm.storage.redis import RedisStorage
+        redis = Redis.from_url(config.REDIS_URL)
+        await redis.ping()
+        logger.info("FSM storage: Redis")
+        return RedisStorage(redis)
+    except Exception as e:
+        logger.warning(f"Redis is unavailable ({e}); falling back to MemoryStorage — user dialogs will be lost on restart.")
+        return MemoryStorage()
+
 async def main():
     if not config.BOT_TOKEN or config.BOT_TOKEN == "123456789:YOUR_BOT_TOKEN_HERE":
         logger.error("BOT_TOKEN is not set in .env file.")
@@ -78,7 +126,7 @@ async def main():
 
     # Initialize bot and dispatcher
     bot = Bot(token=config.BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
+    dp = Dispatcher(storage=await build_storage())
     
     # Register middlewares
     dp.update.outer_middleware(LoggingMiddleware())
@@ -97,7 +145,10 @@ async def main():
     dp.include_router(start_router)
 
     # Start background tasks
-    asyncio.create_task(unban_worker(bot))
+    background_tasks = [  # keep references so tasks are not garbage-collected
+        asyncio.create_task(unban_worker(bot)),
+        asyncio.create_task(order_expiry_worker(bot)),
+    ]
 
     # Start polling
     logger.info("Starting UstaGo bot...")

@@ -1,7 +1,10 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+import asyncio
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Command
 from bot.core.config import config
+from bot.services import billing
 from database.engine import async_session_maker
 from database.models import User, MasterProfile, MasterStatus, UserRole, Transaction, TransactionType, Order, OrderStatus, Category, District, SystemSettings, TopUpRequest, AdminLog
 from sqlalchemy import select, func, update, delete, or_
@@ -17,6 +20,7 @@ from bot.keyboards.admin import (
 from bot.states import AdminStates, BroadcastStates, UserManagementStates, PaymentSettingsStates
 from aiogram.fsm.context import FSMContext
 from datetime import datetime, timedelta, timezone
+from bot.utils.text import esc
 
 router = Router()
 
@@ -109,7 +113,7 @@ async def list_all_orders(message: Message):
     text = "📋 <b>Последние заказы:</b>\n"
     for o in orders:
         st = "🆕" if o.status == OrderStatus.NEW else "⏳"
-        text += f"\n{st} #{o.id} - {o.category.name}\n📍 {o.district.name if o.district else '—'} | 💰 {o.budget or 'Нет'}"
+        text += f"\n{st} #{o.id} - {esc(o.category.name)}\n📍 {esc(o.district.name if o.district else '—')} | 💰 {o.budget or 'Нет'}"
     
     await message.answer(text, parse_mode="HTML")
 
@@ -156,12 +160,12 @@ async def view_master_details(callback: CallbackQuery):
     acc_status = "✅ ДА" if profile.is_accredited else "❌ НЕТ"
     text = (
         f"👷 <b>Мастер #{profile.id}</b>\n\n"
-        f"👤 Имя: {profile.user.full_name}\n"
+        f"👤 Имя: {esc(profile.user.full_name)}\n"
         f"📅 Стаж: {profile.experience or '—'}\n"
-        f"🗂 Категории: {', '.join([c.name for c in profile.categories])}\n"
-        f"💬 О себе: {profile.description or '—'}\n"
+        f"🗂 Категории: {esc(', '.join([c.name for c in profile.categories]))}\n"
+        f"💬 О себе: {esc(profile.description or '—')}\n"
         f"🏅 Аккредитация: {acc_status}\n"
-        f"TG: @{profile.user.username or 'no_user'} (<code>{profile.user.telegram_id}</code>)"
+        f"TG: @{esc(profile.user.username or 'no_user')} (<code>{profile.user.telegram_id}</code>)"
     )
     
     kb_list = [
@@ -202,53 +206,42 @@ async def approve_master(callback: CallbackQuery):
     if callback.from_user.id not in config.ADMIN_IDS: return
     master_id = int(callback.data.split(":")[1])
     async with async_session_maker() as session:
-        stmt = select(User).join(MasterProfile).where(MasterProfile.id == master_id)
-        user = (await session.execute(stmt)).scalar_one_or_none()
-        if not user: return
-        profile = (await session.execute(select(MasterProfile).where(MasterProfile.id == master_id))).scalar_one()
-        profile.status = MasterStatus.APPROVED
-        
-        # 🎁 WELCOME BONUS for the MASTER
-        user.points += 2000
-        session.add(Transaction(
-            user_id=user.id,
-            amount=2000,
-            type=TransactionType.REFERRAL_BONUS,
-            description="Приветственный бонус при регистрации"
-        ))
-
-        # 🎁 REFERRAL reward for the inviter
-        if user.referred_by:
-            inviter = await session.get(User, user.referred_by)
-            if inviter:
-                inviter.points += 1000
-                session.add(Transaction(
-                    user_id=inviter.id,
-                    amount=1000,
-                    type=TransactionType.REFERRAL_BONUS,
-                    description=f"Бонус за регистрацию мастера {user.full_name}"
-                ))
-                try:
-                    await callback.bot.send_message(
-                        inviter.telegram_id,
-                        f"🎁 <b>Бонус за реферала!</b>\n\n"
-                        f"Приглашенный вами мастер <b>{user.full_name}</b> успешно прошел проверку.\n"
-                        f"Вам начислено <b>1000 баллов</b>!",
-                        parse_mode="HTML"
-                    )
-                except Exception: pass
-                
+        profile = (await session.execute(
+            select(MasterProfile).options(selectinload(MasterProfile.user)).where(MasterProfile.id == master_id)
+        )).scalar_one_or_none()
+        if not profile:
+            await callback.answer("Мастер не найден.", show_alert=True)
+            return
+        user = profile.user
+        # Bonuses are paid by the billing service — at most once per master / referral
+        result = await billing.approve_master(session, profile)
+        if not result.granted:
+            await callback.answer("ℹ️ Этот мастер уже одобрен.", show_alert=True)
+            return
         tg_id = user.telegram_id
+        full_name = user.full_name
         is_target_admin = tg_id in config.ADMIN_IDS
-        await log_admin_action(session, callback.from_user.id, "APPROVE_MASTER", f"Master #{master_id} approved. User: {user.full_name}")
+        await log_admin_action(session, callback.from_user.id, "APPROVE_MASTER", f"Master #{master_id} approved. User: {full_name}")
         await session.commit()
     await callback.message.edit_text(f"✅ Мастер #{master_id} одобрен!")
+
+    if result.inviter_telegram_id:
+        try:
+            await callback.bot.send_message(
+                result.inviter_telegram_id,
+                f"🎁 <b>Бонус за реферала!</b>\n\n"
+                f"Приглашенный вами мастер <b>{esc(full_name)}</b> успешно прошел проверку.\n"
+                f"Вам начислено <b>{result.inviter_bonus} баллов</b>!",
+                parse_mode="HTML"
+            )
+        except Exception: pass
+    bonus_line = f"🎁 Вам начислено <b>{result.welcome} приветственных баллов</b>.\n" if result.welcome else ""
     try:
         await callback.bot.send_message(
-            tg_id, 
+            tg_id,
             f"🎉 <b>Ваш профиль мастера одобрен!</b>\n\n"
-            f"🎁 Вам начислено <b>2000 приветственных баллов</b>.\n"
-            f"Теперь вы можете откликаться на заказы.", 
+            f"{bonus_line}"
+            f"Теперь вы можете откликаться на заказы.",
             reply_markup=get_master_main_menu(is_admin=is_target_admin),
             parse_mode="HTML"
         )
@@ -297,17 +290,18 @@ async def admin_refill_points(message: Message):
             await message.answer(f"❌ Пользователь с ID <code>{target_id}</code> не найден в базе.", parse_mode="HTML")
             return
             
-        user.points += amount
-        session.add(Transaction(
-            user_id=user.id, 
-            amount=amount, 
-            type=TransactionType.ADMIN_ADJUSTMENT, 
-            description="Ручное пополнение администратором"
-        ))
+        if amount == 0:
+            await message.answer("❌ Сумма не может быть нулевой.")
+            return
+        try:
+            await billing.adjust(session, user.id, amount, TransactionType.ADMIN_ADJUSTMENT, "Ручное пополнение администратором")
+        except billing.InsufficientFunds:
+            await message.answer("❌ Баланс пользователя не может стать отрицательным.")
+            return
         await log_admin_action(session, message.from_user.id, "REFILL_POINTS", f"Refilled {amount} to user {user.full_name} ({user.id})")
         await session.commit()
         
-    await message.answer(f"✅ Баланс пользователя <b>{user.full_name}</b> пополнен на <b>{amount}</b> баллов.", parse_mode="HTML")
+    await message.answer(f"✅ Баланс пользователя <b>{esc(user.full_name)}</b> пополнен на <b>{amount}</b> баллов.", parse_mode="HTML")
     try:
         await message.bot.send_message(target_id, f"💰 Ваш баланс пополнен администратором на <b>{amount}</b> баллов!", parse_mode="HTML")
     except Exception:
@@ -408,6 +402,21 @@ async def admin_del_dist(callback: CallbackQuery):
     await callback.answer(f"✅ Район удален (затронуто мастеров: {masters_c})")
     await admin_manage_districts(callback.message)
 
+async def _broadcast_send(bot, uid: int, text: str, photo) -> bool:
+    """Sends one broadcast message, honouring Telegram flood-control (one retry)."""
+    for attempt in range(2):
+        try:
+            if photo:
+                await bot.send_photo(uid, photo, caption=text, parse_mode="HTML")
+            else:
+                await bot.send_message(uid, text, parse_mode="HTML")
+            return True
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except Exception:
+            return False
+    return False
+
 @router.message(F.text == "📢 Рассылка")
 async def start_broadcast(message: Message, state: FSMContext):
     if message.from_user.id not in config.ADMIN_IDS: return
@@ -494,14 +503,10 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext):
     
     count = 0
     for uid in users:
-        try:
-            if photo:
-                await callback.bot.send_photo(uid, photo, caption=text, parse_mode="HTML")
-            else:
-                await callback.bot.send_message(uid, text, parse_mode="HTML")
+        if await _broadcast_send(callback.bot, uid, text, photo):
             count += 1
-        except Exception: pass
-            
+        await asyncio.sleep(0.05)  # stay under Telegram's ~30 msg/sec limit
+
     await callback.message.answer(f"✅ Рассылка завершена! Доставлено {count} пользователям.")
     await state.clear()
     await callback.answer()
@@ -549,7 +554,7 @@ async def process_user_ban_search(message: Message, state: FSMContext):
         status = f"🚫 Забанен до {user.banned_until.strftime('%d.%m.%Y %H:%M')}"
         
     text = (
-        f"👤 <b>Управление пользователем:</b> {user.full_name}\n"
+        f"👤 <b>Управление пользователем:</b> {esc(user.full_name)}\n"
         f"🆔 ID записи: {user.id}\n"
         f"📱 TG ID: <code>{user.telegram_id}</code>\n"
         f"📊 Статус: {status}\n\n"
@@ -666,7 +671,7 @@ async def process_crypto_address(message: Message, state: FSMContext):
         await log_admin_action(session, message.from_user.id, "EDIT_CRYPTO_ADDRESS", f"New address: {message.text}")
         await session.commit()
     await state.clear()
-    await message.answer(f"✅ Адрес криптовалюты обновлен на: <code>{message.text}</code>", parse_mode="HTML")
+    await message.answer(f"✅ Адрес криптовалюты обновлен на: <code>{esc(message.text)}</code>", parse_mode="HTML")
     await cmd_payment_settings(message)
 
 @router.message(PaymentSettingsStates.entering_bank_details)
@@ -702,13 +707,13 @@ async def list_topup_requests(callback: CallbackQuery):
     for req in requests:
         text = (
             f"💰 <b>Заявка на пополнение #{req.id}</b>\n\n"
-            f"👤 От: {req.user.full_name} (<code>{req.user.telegram_id}</code>)\n"
+            f"👤 От: {esc(req.user.full_name)} (<code>{req.user.telegram_id}</code>)\n"
             f"💵 Сумма: <b>{req.amount}</b> баллов\n"
             f"🔹 Метод: {req.method}\n"
             f"📅 Дата: {req.created_at.strftime('%d.%m.%Y %H:%M')}"
         )
-        if req.receipt_photo:
-            await callback.bot.send_photo(callback.from_user.id, req.receipt_photo, caption=text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
+        if req.receipt_data:
+            await callback.bot.send_photo(callback.from_user.id, req.receipt_data, caption=text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
         else:
             await callback.message.answer(text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
 
@@ -719,7 +724,7 @@ async def process_topup_review(callback: CallbackQuery):
     request_id = int(request_id)
     
     async with async_session_maker() as session:
-        req = await session.get(TopUpRequest, request_id)
+        req = await session.get(TopUpRequest, request_id, with_for_update=True)
         if not req or req.status != "PENDING":
             await callback.answer("⚠️ Заявка уже обработана или не найдена.")
             return
@@ -728,13 +733,7 @@ async def process_topup_review(callback: CallbackQuery):
         
         if action == "tr_approve":
             req.status = "APPROVED"
-            user.points += req.amount
-            session.add(Transaction(
-                user_id=user.id,
-                amount=req.amount,
-                type=TransactionType.REFILL,
-                description=f"Пополнение баланса через {req.method}"
-            ))
+            await billing.credit(session, user.id, req.amount, TransactionType.TOPUP, f"Пополнение баланса через {req.method}")
             msg = f"✅ <b>Ваша заявка на пополнение одобрена!</b>\nНачислено <b>{req.amount}</b> баллов."
             admin_msg = f"✅ Заявка #{request_id} одобрена. Баллы начислены."
         else:

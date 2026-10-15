@@ -1,8 +1,10 @@
-from fastapi import FastAPI, Depends, HTTPException, Body
-from sqlalchemy import select, func, update
+from fastapi import FastAPI, Depends, HTTPException, Body, Request
+from admin_api import security
+from admin_api.security import ROLE_SUPER, ROLE_MODERATOR, ROLE_FINANCE, ADMIN_ROLES, effective_role
+from sqlalchemy import select, func, update, or_, exists
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings, AdminLog
+from database.models import SupportTicket, User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings, AdminLog
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,12 +14,23 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from bot.core.config import config
 from aiogram import Bot
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from bot.services import orders as order_service
+import csv
+import io
+from statistics import median
 import admin_api.backups as backup_util
+from bot.services import billing
+from bot.utils.text import esc
 import asyncio
+from contextlib import asynccontextmanager
 import sentry_sdk
 import random
+import secrets
+import hmac
+import logging
 import time
+from database.models import BidStatus
 
 # --- SENTRY INITIALIZATION ---
 if config.SENTRY_DSN:
@@ -30,32 +43,45 @@ if config.SENTRY_DSN:
         enable_tracing=True,
     )
 
-app = FastAPI(title="UstaGo Admin API")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    backup_task = asyncio.create_task(scheduled_backups())  # daily backups
+    try:
+        yield
+    finally:
+        backup_task.cancel()
+        await asyncio.gather(backup_task, return_exceptions=True)
+        await bot_instance.session.close()
+
+
+app = FastAPI(title="UstaGo Admin API", lifespan=lifespan)
 bot_instance = Bot(token=config.BOT_TOKEN)
 
-async def notify_user(telegram_id: int, message: str):
-    """Sends a notification to the user via Telegram bot."""
+async def notify_user(telegram_id: int, message: str) -> bool:
+    """Sends a notification to the user via Telegram bot. Returns False if Telegram refused it."""
     try:
         await bot_instance.send_message(telegram_id, message, parse_mode="HTML")
+        return True
     except Exception as e:
-        print(f"Failed to notify user {telegram_id}: {e}")
+        logging.getLogger("admin_api").warning("Failed to notify user %s: %s", telegram_id, e)
+        return False
 
 async def log_action(session, action: str, details: str, admin_id: Optional[int] = None):
     """Utility to log administrative actions."""
     session.add(AdminLog(action=action, details=details, admin_id=admin_id))
 
+_cors_origins = config.CORS_ORIGINS or ["*"]
+if _cors_origins == ["*"]:
+    logging.getLogger("admin_api").warning(
+        "CORS_ORIGINS is not set: allowing all origins. Set CORS_ORIGINS in .env for production."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=False,  # auth is a Bearer header, cookies are not used
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.on_event("startup")
-async def startup_event():
-    # Start background task for daily backups
-    asyncio.create_task(scheduled_backups())
 
 async def scheduled_backups():
     """Background task to create a backup every 24 hours."""
@@ -77,7 +103,12 @@ async def scheduled_backups():
         await asyncio.sleep(60 * 60 * 24) # 24 hours
 
 # Security Configuration
-SECRET_KEY = getattr(config, "JWT_SECRET_KEY", "your-secret-key-change-it-in-env")
+SECRET_KEY = config.JWT_SECRET_KEY
+if not SECRET_KEY or len(SECRET_KEY) < 32:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not set or shorter than 32 chars. Generate one: "
+        "python -c \"import secrets; print(secrets.token_urlsafe(48))\" and put it into .env"
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
@@ -86,8 +117,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 # --- AUTH UTILS ---
 
-# 2FA temporary code storage: {username: {"code": "123456", "expires": timestamp}}
-_2fa_codes: dict = {}
+_DUMMY_HASH = pwd_context.hash(secrets.token_urlsafe(8))
 
 def verify_password(plain_password, hashed_password):
     if not hashed_password: return False
@@ -129,47 +159,48 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
             raise HTTPException(status_code=403, detail="Not enough permissions")
         return user
 
+def require_role(*allowed: str):
+    """Dependency factory: SUPERADMIN always passes, the listed roles pass, everyone else gets 403 (empty list = superadmin only)."""
+    async def checker(current_user: User = Depends(get_current_user)):
+        role = effective_role(current_user)
+        if role != ROLE_SUPER and role not in allowed:
+            raise HTTPException(status_code=403, detail="Недостаточно прав для этого действия")
+        return current_user
+    return checker
+
+
+MODERATION = require_role(ROLE_MODERATOR)   # masters, order cancellation
+FINANCE = require_role(ROLE_FINANCE)        # points, top-ups
+SUPERADMIN = require_role()                 # settings, directories, logs, backups, admins
+
 # --- AUTH ENDPOINTS ---
 
 @app.post("/api/v1/auth/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    ip = security.client_ip(request)
+    await security.ensure_login_allowed(form_data.username, ip)
+
     async with async_session_maker() as session:
         stmt = select(User).where(User.username == form_data.username)
         user = (await session.execute(stmt)).scalar_one_or_none()
-        
-        print(f"DEBUG LOGIN: Attempt for username='{form_data.username}'")
-        if not user:
-            print(f"DEBUG LOGIN: User '{form_data.username}' NOT FOUND")
-            raise HTTPException(status_code=401, detail="Incorrect username or password")
-        
-        # Печатаем длину, чтобы понять, нет ли лишних пробелов
-        received_pass = form_data.password
-        print(f"DEBUG LOGIN: Received password length: {len(received_pass)}")
-        # Печатаем первый и последний символ для верности (скрыто)
-        if len(received_pass) > 0:
-            print(f"DEBUG LOGIN: First char: '{received_pass[0]}', Last char: '{received_pass[-1]}'")
 
-        is_valid = verify_password(received_pass, user.hashed_password)
-        print(f"DEBUG LOGIN: Password verification result: {is_valid}")
-
+        # bcrypt always runs (dummy hash for unknown users) so response time does not reveal which usernames exist
+        is_valid = verify_password(form_data.password, user.hashed_password if user else _DUMMY_HASH) and bool(user)
         if not is_valid:
+            await security.register_login_failure(form_data.username, ip)
             raise HTTPException(
                 status_code=401,
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         if user.role != UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Not enough permissions")
-        
+
         # Generate 2FA code and send to Telegram
-        code = str(random.randint(100000, 999999))
-        _2fa_codes[user.username] = {
-            "code": code,
-            "expires": time.time() + 300  # 5 minutes TTL
-        }
-        
-        # Send code via Telegram
+        code = str(secrets.randbelow(900000) + 100000)
+        await security.save_2fa_code(user.username, code)
+
         try:
             await bot_instance.send_message(
                 user.telegram_id,
@@ -180,9 +211,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                 parse_mode="HTML"
             )
         except Exception as e:
-            print(f"Failed to send 2FA code to {user.telegram_id}: {e}")
+            logging.getLogger("admin_api").error("Failed to send 2FA code to %s: %s", user.telegram_id, e)
             raise HTTPException(status_code=500, detail="Failed to send 2FA code")
-        
+
         return {"requires_2fa": True, "message": "2FA code sent to your Telegram"}
 
 class TwoFAVerify(BaseModel):
@@ -190,25 +221,22 @@ class TwoFAVerify(BaseModel):
     code: str
 
 @app.post("/api/v1/auth/verify-2fa")
-async def verify_2fa(data: TwoFAVerify):
-    stored = _2fa_codes.get(data.username)
-    
-    if not stored:
-        raise HTTPException(status_code=400, detail="No 2FA code requested. Please login again.")
-    
-    if time.time() > stored["expires"]:
-        del _2fa_codes[data.username]
-        raise HTTPException(status_code=400, detail="2FA code expired. Please login again.")
-    
-    if stored["code"] != data.code:
+async def verify_2fa(data: TwoFAVerify, request: Request):
+    ip = security.client_ip(request)
+    await security.ensure_login_allowed(data.username, ip)
+
+    result = await security.check_2fa_code(data.username, data.code)
+    if result == "missing":
+        raise HTTPException(status_code=400, detail="No 2FA code requested or it expired. Please login again.")
+    if result in ("wrong", "locked"):
+        await security.register_login_failure(data.username, ip)
+        if result == "locked":
+            raise HTTPException(status_code=400, detail="Too many invalid codes. Please login again.")
         raise HTTPException(status_code=400, detail="Invalid 2FA code")
-    
-    # Code is valid — clean up and issue JWT
-    del _2fa_codes[data.username]
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    await security.clear_login_failures(data.username, ip)
     access_token = create_access_token(
-        data={"sub": data.username}, expires_delta=access_token_expires
+        data={"sub": data.username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -218,7 +246,8 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         "id": current_user.id,
         "username": current_user.username,
         "full_name": current_user.full_name,
-        "role": current_user.role
+        "role": current_user.role,
+        "admin_role": effective_role(current_user),
     }
 
 class PasswordChange(BaseModel):
@@ -244,6 +273,142 @@ async def change_password(data: PasswordChange, current_user: User = Depends(get
 # Редирект старой зависимости для совместимости на время перехода (постепенно заменим)
 async def verify_api_key(current_user: User = Depends(get_current_user)):
     return current_user
+
+EXPORT_LIMIT = 20000
+INT32_MAX = 2**31 - 1
+INT64_MAX = 2**63 - 1
+
+
+def _enum(v):
+    return getattr(v, "value", v)
+
+
+def _safe_cell(v):
+    """Neutralises spreadsheet formula injection (=, +, -, @) in user-controlled text."""
+    if v is None:
+        return ""
+    if isinstance(v, datetime):
+        return v.strftime("%Y-%m-%d %H:%M")
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
+def _csv_response(filename: str, header: list, rows: list) -> StreamingResponse:
+    buf = io.StringIO()
+    buf.write("\ufeff")  # BOM so Excel opens UTF-8 correctly
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(header)
+    for r in rows:
+        w.writerow([_safe_cell(c) for c in r])
+    buf.seek(0)
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+class AdminRoleUpdate(BaseModel):
+    admin_role: str
+
+
+@app.get("/api/v1/admins", dependencies=[Depends(SUPERADMIN)])
+async def list_admins():
+    async with async_session_maker() as session:
+        admins = (await session.execute(select(User).where(User.role == UserRole.ADMIN).order_by(User.id))).scalars().all()
+        return [{"id": a.id, "username": a.username, "full_name": a.full_name, "telegram_id": a.telegram_id,
+                 "admin_role": effective_role(a), "has_password": bool(a.hashed_password)} for a in admins]
+
+
+@app.patch("/api/v1/admins/{user_id}", dependencies=[Depends(SUPERADMIN)])
+async def set_admin_role(user_id: int, data: AdminRoleUpdate, current_user: User = Depends(get_current_user)):
+    if data.admin_role not in ADMIN_ROLES:
+        raise HTTPException(status_code=400, detail=f"Роль должна быть одной из: {', '.join(ADMIN_ROLES)}")
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Нельзя менять собственную роль")
+    async with async_session_maker() as session:
+        target = (await session.execute(select(User).where(User.id == user_id).with_for_update())).scalar_one_or_none()
+        if not target or target.role != UserRole.ADMIN:
+            raise HTTPException(status_code=404, detail="Администратор не найден")
+        old = effective_role(target)
+        target.admin_role = data.admin_role
+        await log_action(session, "SET_ADMIN_ROLE", f"Admin #{target.id} ({target.username}): {old} -> {data.admin_role}",
+                         admin_id=current_user.id)
+        await session.commit()
+    return {"status": "success", "admin_role": data.admin_role}
+
+
+# --- SUPPORT ---
+
+@app.get("/api/v1/support/tickets", dependencies=[Depends(verify_api_key)])
+async def list_support_tickets(status: str = "open", q: Optional[str] = None, skip: int = 0, limit: int = 50):
+    """status: open (not answered) | answered | all."""
+    limit = max(1, min(limit, 200))
+    conds = []
+    if status == "open":
+        conds.append(SupportTicket.is_replied.is_(False))
+    elif status == "answered":
+        conds.append(SupportTicket.is_replied.is_(True))
+    elif status != "all":
+        raise HTTPException(status_code=400, detail="status must be open, answered or all")
+    if q and q.strip():
+        like = f"%{q.strip().lstrip('@')}%"
+        conds.append(or_(SupportTicket.message.ilike(like),
+                         exists().where(User.id == SupportTicket.user_id,
+                                        or_(User.full_name.ilike(like), User.username.ilike(like), User.phone_number.ilike(like)))))
+    async with async_session_maker() as session:
+        total = (await session.execute(select(func.count(SupportTicket.id)).where(*conds))).scalar() or 0
+        open_count = (await session.execute(
+            select(func.count(SupportTicket.id)).where(SupportTicket.is_replied.is_(False)))).scalar() or 0
+        # unanswered first (oldest first = longest waiting), answered - newest first
+        order = (SupportTicket.created_at.asc(), SupportTicket.id.asc()) if status == "open" else (SupportTicket.created_at.desc(), SupportTicket.id.desc())
+        tickets = (await session.execute(
+            select(SupportTicket).options(selectinload(SupportTicket.user)).where(*conds).order_by(*order).offset(skip).limit(limit)
+        )).scalars().all()
+        return {"total": total, "open_count": open_count, "items": [{
+            "id": t.id,
+            "message": t.message,
+            "is_replied": t.is_replied,
+            "admin_reply": t.admin_reply,
+            "replied_at": t.replied_at,
+            "created_at": t.created_at,
+            "user": {"id": t.user.id, "name": t.user.full_name, "username": t.user.username,
+                     "phone": t.user.phone_number, "role": t.user.role},
+        } for t in tickets]}
+
+
+class TicketReply(BaseModel):
+    text: str
+
+
+@app.post("/api/v1/support/tickets/{ticket_id}/reply", dependencies=[Depends(MODERATION)])
+async def reply_support_ticket(ticket_id: int, data: TicketReply, current_user: User = Depends(get_current_user)):
+    text = data.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Ответ не может быть пустым")
+    if len(text) > 3500:
+        raise HTTPException(status_code=400, detail="Ответ слишком длинный (максимум 3500 символов)")
+
+    async with async_session_maker() as session:
+        ticket = (await session.execute(
+            select(SupportTicket).options(selectinload(SupportTicket.user)).where(SupportTicket.id == ticket_id)
+        )).scalar_one_or_none()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Обращение не найдено")
+        user_tid = ticket.user.telegram_id
+
+    # Mark as answered only if Telegram actually delivered the message
+    delivered = await notify_user(user_tid, f"📨 <b>Ответ от администрации:</b>\n\n{esc(text)}")
+    if not delivered:
+        raise HTTPException(status_code=502, detail="Telegram не доставил сообщение (пользователь мог заблокировать бота)")
+
+    async with async_session_maker() as session:
+        ticket = (await session.execute(select(SupportTicket).where(SupportTicket.id == ticket_id).with_for_update())).scalar_one()
+        ticket.is_replied = True
+        ticket.admin_reply = text
+        ticket.replied_at = datetime.utcnow()
+        await log_action(session, "SUPPORT_REPLY", f"Ticket #{ticket_id} answered", admin_id=current_user.id)
+        await session.commit()
+    return {"status": "success"}
+
 
 @app.get("/api/v1/health")
 async def health_check():
@@ -282,7 +447,10 @@ async def get_mini_stats():
                 "masters": total_masters
             },
             "moderation": {
-                "pending_masters": pending_masters
+                "pending_masters": pending_masters,
+                "open_tickets": (await session.execute(
+                    select(func.count(SupportTicket.id)).where(SupportTicket.is_replied.is_(False))
+                )).scalar() or 0,
             },
             "orders": {
                 "active": active_orders,
@@ -329,6 +497,43 @@ async def get_mini_stats():
             ]
         }
 
+@app.get("/api/v1/stats/funnel", dependencies=[Depends(verify_api_key)])
+async def get_funnel(days: int = 30):
+    """Conversion funnel for orders created in the last `days` days."""
+    days = max(1, min(days, 365))
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    async with async_session_maker() as session:
+        orders = (await session.execute(
+            select(Order.id, Order.status, Order.created_at).where(Order.created_at >= cutoff)
+        )).all()
+        first_bid = dict((await session.execute(
+            select(Bid.order_id, func.min(Bid.created_at)).join(Order, Order.id == Bid.order_id)
+            .where(Order.created_at >= cutoff).group_by(Bid.order_id)
+        )).all())
+        active_masters = (await session.execute(
+            select(func.count(func.distinct(Bid.master_id))).where(Bid.created_at >= cutoff)
+        )).scalar() or 0
+
+    created = len(orders)
+    with_bids = sum(1 for o in orders if o.id in first_bid)
+    accepted = sum(1 for o in orders if o.status in (OrderStatus.ACTIVE, OrderStatus.COMPLETED))
+    completed = sum(1 for o in orders if o.status == OrderStatus.COMPLETED)
+    cancelled = sum(1 for o in orders if o.status == OrderStatus.CANCELLED)
+    waits = [(first_bid[o.id] - o.created_at).total_seconds() / 60 for o in orders if o.id in first_bid]
+
+    def pct(a, b):
+        return round(a * 100 / b, 1) if b else 0.0
+
+    return {
+        "days": days,
+        "created": created, "with_bids": with_bids, "accepted": accepted, "completed": completed, "cancelled": cancelled,
+        "bid_rate": pct(with_bids, created), "accept_rate": pct(accepted, with_bids),
+        "completion_rate": pct(completed, accepted), "no_response": max(0, created - with_bids - cancelled),
+        "median_first_bid_minutes": round(median(waits), 1) if waits else None,
+        "active_masters": active_masters,
+    }
+
+
 @app.get("/api/v1/stats/orders-chart", dependencies=[Depends(verify_api_key)])
 async def get_orders_chart_data(
     days: Optional[int] = 7, 
@@ -371,13 +576,13 @@ async def get_orders_chart_data(
                 .join(Bid, Bid.order_id == Order.id)\
                 .join(MasterProfile, Bid.master_id == MasterProfile.id)\
                 .join(User, MasterProfile.user_id == User.id)\
-                .where(*where_clause, Bid.status == 'ACCEPTED')\
+                .where(*where_clause, Bid.status == BidStatus.ACCEPTED)\
                 .group_by(func.date(Order.created_at), User.full_name)
         else:
             # Default: split by 'Total' or apply master_id filter
             stmt = select(func.date(Order.created_at).label("day"), func.count(Order.id))
             if master_id:
-                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == 'ACCEPTED')
+                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == BidStatus.ACCEPTED)
             stmt = stmt.where(*where_clause).group_by(func.date(Order.created_at))
 
         results = (await session.execute(stmt)).all()
@@ -459,8 +664,8 @@ async def get_settings():
             await session.refresh(settings)
         return settings
 
-@app.patch("/api/v1/settings", dependencies=[Depends(verify_api_key)])
-async def update_settings(data: SystemSettingsUpdate):
+@app.patch("/api/v1/settings", dependencies=[Depends(SUPERADMIN)])
+async def update_settings(data: SystemSettingsUpdate, current_user: User = Depends(get_current_user)):
     async with async_session_maker() as session:
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
         if not settings:
@@ -473,67 +678,140 @@ async def update_settings(data: SystemSettingsUpdate):
         if data.bank_details is not None: settings.bank_details = data.bank_details
         if data.free_orders_enabled is not None: settings.free_orders_enabled = data.free_orders_enabled
         
-        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.json(exclude_none=True)}", admin_id=current_user.id)
+        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.model_dump_json(exclude_none=True)}", admin_id=current_user.id)
         await session.commit()
         return {"status": "success"}
 
-@app.get("/api/v1/users", dependencies=[Depends(verify_api_key)])
-async def list_users(role: Optional[UserRole] = None, skip: int = 0, limit: int = 50):
-    """Returns a list of all users with detailed stats supporting pagination."""
-    async with async_session_maker() as session:
-        # Total count
-        count_stmt = select(func.count(User.id))
-        if role:
-            count_stmt = count_stmt.where(User.role == role)
-        total = (await session.execute(count_stmt)).scalar() or 0
+def _user_filters(role, q, master_status):
+    """WHERE-clauses shared by the users list and the CSV export."""
+    conds = []
+    if role:
+        conds.append(User.role == role)
+    if q and q.strip():
+        term = q.strip().lstrip("@")
+        like = f"%{term}%"
+        parts = [User.full_name.ilike(like), User.username.ilike(like), User.phone_number.ilike(like)]
+        if term.isdigit():
+            n = int(term)
+            if n <= INT32_MAX:
+                parts.append(User.id == n)
+            if n <= INT64_MAX:
+                parts.append(User.telegram_id == n)
+        conds.append(or_(*parts))
+    if master_status:
+        conds.append(exists().where(MasterProfile.user_id == User.id, MasterProfile.status == master_status))
+    return conds
 
-        # Items
-        stmt = select(User).options(
-            selectinload(User.master_profile).selectinload(MasterProfile.categories),
-            selectinload(User.master_profile).selectinload(MasterProfile.districts),
-            selectinload(User.master_profile).selectinload(MasterProfile.bids).selectinload(Bid.order),
-            selectinload(User.orders_created)
-        )
-        if role:
-            stmt = stmt.where(User.role == role)
-        
-        stmt = stmt.order_by(User.created_at.desc()).offset(skip).limit(limit)
-            
-        users = (await session.execute(stmt)).scalars().all()
-        
-        items = []
-        for u in users:
-            client_orders_count = len(u.orders_created)
-            
-            master_data = None
-            if u.master_profile:
-                total_bids = len(u.master_profile.bids)
-                accepted_bids = sum(1 for b in u.master_profile.bids if b.status == 'ACCEPTED')
-                
-                master_data = {
-                    "master_id": u.master_profile.id,
-                    "description": u.master_profile.description,
-                    "categories": [c.name for c in u.master_profile.categories],
-                    "districts": [d.name for d in u.master_profile.districts],
-                    "total_bids": total_bids,
-                    "processed_orders": accepted_bids,
-                    "status": u.master_profile.status,
-                    "rating": u.master_profile.rating,
-                    "is_accredited": u.master_profile.is_accredited
-                }
-            
-            items.append({
-                "id": u.id,
-                "role": u.role,
-                "full_name": u.full_name,
-                "username": u.username,
-                "phone": u.phone_number,
-                "points": u.points,
-                "client_orders_count": client_orders_count,
-                "master_data": master_data,
-                "created_at": u.created_at
-            })
-        return {"total": total, "items": items}
+
+def _user_row(u: User, orders_count: int = 0, total_bids: int = 0, accepted_bids: int = 0) -> dict:
+    master_data = None
+    if u.master_profile:
+        master_data = {
+            "master_id": u.master_profile.id,
+            "description": u.master_profile.description,
+            "categories": [c.name for c in u.master_profile.categories],
+            "districts": [d.name for d in u.master_profile.districts],
+            "total_bids": total_bids,
+            "processed_orders": accepted_bids,
+            "status": u.master_profile.status,
+            "rating": u.master_profile.rating,
+            "is_accredited": u.master_profile.is_accredited,
+        }
+    return {
+        "id": u.id,
+        "telegram_id": u.telegram_id,
+        "role": u.role,
+        "full_name": u.full_name,
+        "username": u.username,
+        "phone": u.phone_number,
+        "points": u.points,
+        "client_orders_count": orders_count,
+        "master_data": master_data,
+        "created_at": u.created_at,
+    }
+
+
+def _users_select():
+    """SELECT user + counters computed by the database (no loading of every order / bid into memory)."""
+    orders_cnt = select(func.count(Order.id)).where(Order.client_id == User.id).correlate(User).scalar_subquery()
+    bids = select(func.count(Bid.id)).join(MasterProfile, MasterProfile.id == Bid.master_id).where(MasterProfile.user_id == User.id).correlate(User)
+    bids_cnt = bids.scalar_subquery()
+    accepted_cnt = bids.where(Bid.status == BidStatus.ACCEPTED).scalar_subquery()
+    return select(User, orders_cnt, bids_cnt, accepted_cnt).options(
+        selectinload(User.master_profile).selectinload(MasterProfile.categories),
+        selectinload(User.master_profile).selectinload(MasterProfile.districts),
+    )
+
+
+@app.get("/api/v1/users", dependencies=[Depends(verify_api_key)])
+async def list_users(role: Optional[UserRole] = None, q: Optional[str] = None,
+                     master_status: Optional[MasterStatus] = None, skip: int = 0, limit: int = 50):
+    """Users with stats; server-side search (name / @username / phone / id / telegram id) and filters."""
+    limit = max(1, min(limit, 200))
+    conds = _user_filters(role, q, master_status)
+    async with async_session_maker() as session:
+        total = (await session.execute(select(func.count(User.id)).where(*conds))).scalar() or 0
+        stmt = (_users_select().where(*conds)
+                .order_by(User.created_at.desc(), User.id.desc()).offset(skip).limit(limit))
+        rows = (await session.execute(stmt)).all()
+        return {"total": total, "items": [_user_row(*r) for r in rows]}
+
+
+@app.get("/api/v1/users/export", dependencies=[Depends(verify_api_key)])
+async def export_users(role: Optional[UserRole] = None, q: Optional[str] = None,
+                       master_status: Optional[MasterStatus] = None):
+    conds = _user_filters(role, q, master_status)
+    async with async_session_maker() as session:
+        found = (await session.execute(_users_select().where(*conds).order_by(User.id).limit(EXPORT_LIMIT))).all()
+    rows = []
+    for found_row in found:
+        r = _user_row(*found_row)
+        m = r["master_data"] or {}
+        rows.append([r["id"], r["telegram_id"], _enum(r["role"]), r["full_name"], r["username"], r["phone"], r["points"],
+                     r["client_orders_count"], _enum(m.get("status")), m.get("total_bids"), m.get("processed_orders"),
+                     "; ".join(m.get("categories", [])), "; ".join(m.get("districts", [])), r["created_at"]])
+    return _csv_response("users.csv",
+                         ["id", "telegram_id", "role", "name", "username", "phone", "points", "client_orders",
+                          "master_status", "bids", "accepted_bids", "categories", "districts", "created_at"], rows)
+
+
+@app.get("/api/v1/users/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_user_details(user_id: int):
+    """Full user card: profile, recent orders / bids and the points history."""
+    async with async_session_maker() as session:
+        found = (await session.execute(_users_select().where(User.id == user_id))).first()
+        if not found:
+            raise HTTPException(status_code=404, detail="User not found")
+        u = found[0]
+        row = _user_row(*found)
+
+        txs = (await session.execute(
+            select(Transaction).where(Transaction.user_id == u.id)
+            .order_by(Transaction.created_at.desc(), Transaction.id.desc()).limit(30)
+        )).scalars().all()
+        orders = (await session.execute(
+            select(Order).options(selectinload(Order.category)).where(Order.client_id == u.id)
+            .order_by(Order.created_at.desc()).limit(10)
+        )).scalars().all()
+        bids = []
+        if u.master_profile:
+            bids = (await session.execute(
+                select(Bid).where(Bid.master_id == u.master_profile.id).order_by(Bid.created_at.desc()).limit(10)
+            )).scalars().all()
+        referrals = (await session.execute(select(func.count(User.id)).where(User.referred_by == u.id))).scalar() or 0
+
+        row.update({
+            "referrals": referrals,
+            "banned_until": u.banned_until,
+            "transactions": [{"id": t.id, "amount": t.amount, "type": t.type, "description": t.description,
+                              "date": t.created_at} for t in txs],
+            "orders": [{"id": o.id, "category": o.category.name, "status": o.status, "budget": o.budget,
+                        "created_at": o.created_at} for o in orders],
+            "bids": [{"id": b.id, "order_id": b.order_id, "price": b.suggested_price, "status": b.status,
+                      "created_at": b.created_at} for b in bids],
+        })
+        return row
+
 
 @app.get("/api/v1/masters", dependencies=[Depends(verify_api_key)])
 async def list_masters(status: Optional[MasterStatus] = None):
@@ -590,76 +868,129 @@ async def get_master_details(master_id: int):
             "districts": [{"id": d.id, "name": d.name} for d in master.districts]
         }
 
-@app.patch("/api/v1/masters/{master_id}", dependencies=[Depends(verify_api_key)])
-async def update_master_status(master_id: int, data: MasterUpdate):
-    """Updates master status or accreditation."""
+@app.patch("/api/v1/masters/{master_id}", dependencies=[Depends(MODERATION)])
+async def update_master_status(master_id: int, data: MasterUpdate, current_user: User = Depends(get_current_user)):
+    """Updates master status or accreditation. Approving pays the welcome/referral bonuses exactly like the bot does."""
+    notifications = []
     async with async_session_maker() as session:
-        master = (await session.get(MasterProfile, master_id))
+        master = await session.get(MasterProfile, master_id)
         if not master:
             raise HTTPException(status_code=404, detail="Master not found")
-            
+
         if data.status is not None:
-            master.status = data.status
+            if data.status == MasterStatus.APPROVED:
+                result = await billing.approve_master(session, master)
+                if result.granted:
+                    user = await session.get(User, master.user_id)
+                    bonus = f"\n🎁 Вам начислено <b>{result.welcome} приветственных баллов</b>." if result.welcome else ""
+                    notifications.append((user.telegram_id, f"🎉 <b>Ваш профиль мастера одобрен!</b>{bonus}\nТеперь вы можете откликаться на заказы."))
+                    if result.inviter_telegram_id:
+                        notifications.append((
+                            result.inviter_telegram_id,
+                            f"🎁 <b>Бонус за реферала!</b>\nПриглашенный вами мастер <b>{user.full_name}</b> прошёл проверку. "
+                            f"Вам начислено <b>{result.inviter_bonus} баллов</b>!",
+                        ))
+            else:
+                master.status = data.status
         if data.is_accredited is not None:
             master.is_accredited = data.is_accredited
-            
-        await session.commit()
-        return {"status": "success", "master_id": master_id}
 
-@app.post("/api/v1/masters/{master_id}/adjust-points", dependencies=[Depends(verify_api_key)])
-async def adjust_master_points(master_id: int, data: PointAdjustment):
-    """Manually adjust master points (add/remove)."""
+        await log_action(session, "UPDATE_MASTER", f"Master #{master_id}: {data.model_dump_json(exclude_none=True)}", admin_id=current_user.id)
+        await session.commit()
+
+    for tg_id, text in notifications:
+        await notify_user(tg_id, text)
+    return {"status": "success", "master_id": master_id}
+
+@app.post("/api/v1/masters/{master_id}/adjust-points", dependencies=[Depends(FINANCE)])
+async def adjust_master_points(master_id: int, data: PointAdjustment, current_user: User = Depends(get_current_user)):
+    """Manually adjust master points (add/remove). A balance can never become negative."""
+    if data.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount must not be zero")
     async with async_session_maker() as session:
         # Get user linked to master
         stmt = select(User).join(MasterProfile).where(MasterProfile.id == master_id)
         user = (await session.execute(stmt)).scalar_one_or_none()
-        
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found for this master")
-            
-        user.points += data.amount
-        session.add(Transaction(
-            user_id=user.id,
-            amount=data.amount,
-            type=TransactionType.ADMIN_ADJUSTMENT,
-            description=data.description
-        ))
-        
+
+        try:
+            user = await billing.adjust(session, user.id, data.amount, TransactionType.ADMIN_ADJUSTMENT, data.description)
+        except billing.InsufficientFunds:
+            raise HTTPException(status_code=400, detail="Insufficient balance: points cannot go below zero")
+        await log_action(session, "ADJUST_POINTS", f"Master #{master_id}: {data.amount} ({data.description})", admin_id=current_user.id)
         await session.commit()
         return {"status": "success", "new_balance": user.points}
 
 # --- ORDERS ---
 
-@app.get("/api/v1/orders", dependencies=[Depends(verify_api_key)])
-async def list_orders(status: Optional[OrderStatus] = None, skip: int = 0, limit: int = 50):
-    """Returns a list of orders supporting pagination."""
-    async with async_session_maker() as session:
-        # Total count
-        count_stmt = select(func.count(Order.id))
-        if status:
-            count_stmt = count_stmt.where(Order.status == status)
-        total = (await session.execute(count_stmt)).scalar() or 0
+def _order_filters(status, q, category_id, date_from, date_to):
+    conds = []
+    if status:
+        conds.append(Order.status == status)
+    if category_id:
+        conds.append(Order.category_id == category_id)
+    if date_from:
+        conds.append(Order.created_at >= date_from)
+    if date_to:
+        conds.append(Order.created_at < date_to + timedelta(days=1))
+    if q and q.strip():
+        term = q.strip()
+        like = f"%{term}%"
+        parts = [Order.description.ilike(like),
+                 exists().where(Category.id == Order.category_id, Category.name.ilike(like)),
+                 exists().where(District.id == Order.district_id, District.name.ilike(like)),
+                 exists().where(User.id == Order.client_id, or_(User.full_name.ilike(like), User.phone_number.ilike(like)))]
+        if term.lstrip("#").isdigit() and int(term.lstrip("#")) <= INT32_MAX:
+            parts.append(Order.id == int(term.lstrip("#")))
+        conds.append(or_(*parts))
+    return conds
 
-        # Items
-        stmt = select(Order).options(selectinload(Order.category), selectinload(Order.district))
-        if status:
-            stmt = stmt.where(Order.status == status)
-        
-        stmt = stmt.order_by(Order.created_at.desc()).offset(skip).limit(limit)
-        
-        orders = (await session.execute(stmt)).scalars().all()
-        
+
+@app.get("/api/v1/orders", dependencies=[Depends(verify_api_key)])
+async def list_orders(status: Optional[OrderStatus] = None, q: Optional[str] = None,
+                      category_id: Optional[int] = None, date_from: Optional[datetime] = None,
+                      date_to: Optional[datetime] = None, skip: int = 0, limit: int = 50):
+    """Orders with server-side search (id / text / category / district / client) and filters."""
+    limit = max(1, min(limit, 200))
+    conds = _order_filters(status, q, category_id, date_from, date_to)
+    bids_count = (select(func.count(Bid.id)).where(Bid.order_id == Order.id).correlate(Order).scalar_subquery())
+    async with async_session_maker() as session:
+        total = (await session.execute(select(func.count(Order.id)).where(*conds))).scalar() or 0
+        stmt = (select(Order, bids_count)
+                .options(selectinload(Order.category), selectinload(Order.district), selectinload(Order.client))
+                .where(*conds).order_by(Order.created_at.desc(), Order.id.desc()).offset(skip).limit(limit))
         items = [{
             "id": o.id,
             "client_id": o.client_id,
+            "client_name": o.client.full_name,
             "category": o.category.name,
             "district": o.district.name if o.district else None,
             "status": o.status,
             "budget": o.budget,
-            "created_at": o.created_at
-        } for o in orders]
-        
+            "bids_count": n,
+            "created_at": o.created_at,
+        } for o, n in (await session.execute(stmt)).all()]
         return {"total": total, "items": items}
+
+
+@app.get("/api/v1/orders/export", dependencies=[Depends(verify_api_key)])
+async def export_orders(status: Optional[OrderStatus] = None, q: Optional[str] = None,
+                        category_id: Optional[int] = None, date_from: Optional[datetime] = None,
+                        date_to: Optional[datetime] = None):
+    conds = _order_filters(status, q, category_id, date_from, date_to)
+    bids_count = (select(func.count(Bid.id)).where(Bid.order_id == Order.id).correlate(Order).scalar_subquery())
+    async with async_session_maker() as session:
+        res = (await session.execute(
+            select(Order, bids_count)
+            .options(selectinload(Order.category), selectinload(Order.district), selectinload(Order.client))
+            .where(*conds).order_by(Order.id).limit(EXPORT_LIMIT))).all()
+    rows = [[o.id, _enum(o.status), o.category.name, o.district.name if o.district else "", o.client.full_name,
+             o.client.phone_number, o.budget, n, o.description, o.created_at] for o, n in res]
+    return _csv_response("orders.csv", ["id", "status", "category", "district", "client", "client_phone", "budget",
+                                        "bids", "description", "created_at"], rows)
+
 
 @app.get("/api/v1/orders/{order_id}", dependencies=[Depends(verify_api_key)])
 async def get_order_details(order_id: int):
@@ -671,16 +1002,19 @@ async def get_order_details(order_id: int):
             selectinload(Order.client),
             selectinload(Order.bids).selectinload(Bid.master).selectinload(MasterProfile.user)
         ).where(Order.id == order_id)
-        
+
         order = (await session.execute(stmt)).scalar_one_or_none()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
-            
+
         return {
             "id": order.id,
             "status": order.status,
+            "category": order.category.name,
+            "district": order.district.name if order.district else None,
             "description": order.description,
             "budget": order.budget,
+            "created_at": order.created_at,
             "client": {
                 "id": order.client.id,
                 "name": order.client.full_name,
@@ -688,12 +1022,39 @@ async def get_order_details(order_id: int):
             },
             "bids": [{
                 "id": b.id,
+                "master_user_id": b.master.user.id,
                 "master_name": b.master.user.full_name,
                 "price": b.suggested_price,
                 "status": b.status,
-                "message": b.message
+                "message": b.message,
+                "created_at": b.created_at,
             } for b in order.bids]
         }
+
+
+@app.post("/api/v1/orders/{order_id}/cancel", dependencies=[Depends(MODERATION)])
+async def admin_cancel_order(order_id: int, current_user: User = Depends(get_current_user)):
+    """Cancels an open order (spam, fraud) and refunds the bid fees of every master who responded."""
+    async with async_session_maker() as session:
+        order = (await session.execute(
+            select(Order).options(selectinload(Order.client)).where(Order.id == order_id).with_for_update()
+        )).scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if order.status in (OrderStatus.COMPLETED, OrderStatus.CANCELLED):
+            raise HTTPException(status_code=400, detail="Заказ уже завершён или отменён")
+        client_tg = order.client.telegram_id
+        notices = await order_service.cancel_order(session, order_id, "заявка отменена администратором")
+        await log_action(session, "CANCEL_ORDER", f"Order #{order_id} cancelled by admin, refunds to {len(notices)} master(s)",
+                         admin_id=current_user.id)
+        await session.commit()
+
+    await notify_user(client_tg, f"⚠️ Ваша заявка №{order_id} была отменена администратором.")
+    for n in notices:
+        extra = f" Возвращено {n.refunded} баллов." if n.refunded else ""
+        await notify_user(n.master_telegram_id, f"⚠️ Заявка №{order_id} отменена администратором.{extra}")
+    return {"status": "success", "refunded_masters": len(notices)}
+
 
 # --- CATEGORIES & DISTRICTS ---
 
@@ -708,14 +1069,14 @@ async def list_categories(skip: int = 0, limit: int = 500):
         cats = (await session.execute(stmt)).scalars().all()
         return {"total": total, "items": cats}
 
-@app.post("/api/v1/categories", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/categories", dependencies=[Depends(SUPERADMIN)])
 async def add_category(data: NameUpdate):
     async with async_session_maker() as session:
         session.add(Category(name=data.name))
         await session.commit()
         return {"status": "created"}
 
-@app.delete("/api/v1/categories/{cat_id}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/v1/categories/{cat_id}", dependencies=[Depends(SUPERADMIN)])
 async def delete_category(cat_id: int):
     async with async_session_maker() as session:
         cat = await session.get(Category, cat_id)
@@ -736,14 +1097,14 @@ async def list_districts(skip: int = 0, limit: int = 500):
         dists = (await session.execute(stmt)).scalars().all()
         return {"total": total, "items": dists}
 
-@app.post("/api/v1/districts", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/districts", dependencies=[Depends(SUPERADMIN)])
 async def add_district(data: NameUpdate):
     async with async_session_maker() as session:
         session.add(District(name=data.name))
         await session.commit()
         return {"status": "created"}
 
-@app.delete("/api/v1/districts/{dist_id}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/v1/districts/{dist_id}", dependencies=[Depends(SUPERADMIN)])
 async def delete_district(dist_id: int):
     async with async_session_maker() as session:
         dist = await session.get(District, dist_id)
@@ -783,39 +1144,44 @@ async def list_topup_requests(status: Optional[str] = "PENDING", skip: int = 0, 
         
         return {"total": total, "items": items}
 
-@app.patch("/api/v1/topups/{request_id}", dependencies=[Depends(verify_api_key)])
-async def review_topup(request_id: int, data: TopUpReview):
+@app.patch("/api/v1/topups/{request_id}", dependencies=[Depends(FINANCE)])
+async def review_topup(request_id: int, data: TopUpReview, current_user: User = Depends(get_current_user)):
+    if data.status not in ("APPROVED", "REJECTED"):
+        raise HTTPException(status_code=400, detail="status must be APPROVED or REJECTED")
     async with async_session_maker() as session:
-        req = await session.get(TopUpRequest, request_id)
+        # Lock the request row so two admins cannot approve the same top-up twice
+        req = (await session.execute(
+            select(TopUpRequest).where(TopUpRequest.id == request_id).with_for_update()
+        )).scalar_one_or_none()
         if not req or req.status != "PENDING":
             raise HTTPException(status_code=404, detail="Request not found or already processed")
-            
-        user = await session.get(User, req.user_id)
-        
+
+        user = (await session.execute(
+            select(User).where(User.id == req.user_id).with_for_update()
+        )).scalar_one()
+
         if data.status == "APPROVED":
             req.status = "APPROVED"
-            user.points += req.amount
-            session.add(Transaction(
-                user_id=user.id,
-                amount=req.amount,
-                type=TransactionType.REFUND, # Positive adjustment
-                description=f"Пополнение баланса через {req.method} (Admin API)"
-            ))
-            # Notification
-            await notify_user(
-                user.telegram_id, 
-                f"✅ <b>Баланс пополнен!</b>\n\nСумма: <b>{req.amount} ₸</b>\nСпособ: {req.method}\nВаш текущий баланс: <b>{user.points} ₸</b>"
+            await billing.credit(session, user.id, req.amount, TransactionType.TOPUP,
+                                 f"Пополнение баланса через {req.method} (Admin API)")
+            message = (
+                f"✅ <b>Баланс пополнен!</b>\n\nСумма: <b>{req.amount} ₸</b>\nСпособ: {req.method}\n"
+                f"Ваш текущий баланс: <b>{user.points} ₸</b>"
             )
         else:
             req.status = "REJECTED"
-            await notify_user(
-                user.telegram_id, 
-                f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\nЕсли у вас есть вопросы, обратитесь в поддержку."
+            message = (
+                f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\n"
+                "Если у вас есть вопросы, обратитесь в поддержку."
             )
-            
+
         await log_action(session, f"TOPUP_{data.status}", f"Request #{request_id} reviewed. User: {user.full_name}, Amount: {req.amount}", admin_id=current_user.id)
+        telegram_id = user.telegram_id
         await session.commit()
-        return {"status": "success"}
+
+    # Notify only AFTER the data is safely committed
+    await notify_user(telegram_id, message)
+    return {"status": "success"}
 
 @app.get("/api/v1/transactions", dependencies=[Depends(verify_api_key)])
 async def list_transactions(skip: int = 0, limit: int = 50):
@@ -845,9 +1211,12 @@ async def list_transactions(skip: int = 0, limit: int = 50):
         
         return {"total": total, "items": items}
 
-@app.post("/api/v1/finance/bulk-adjust-points", dependencies=[Depends(verify_api_key)])
-async def bulk_adjust_points(data: BulkPointAdjustment):
+@app.post("/api/v1/finance/bulk-adjust-points", dependencies=[Depends(FINANCE)])
+async def bulk_adjust_points(data: BulkPointAdjustment, current_user: User = Depends(get_current_user)):
     """Adjust points for multiple masters or all of them."""
+    if data.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount must not be zero")
+    notifications = []
     async with async_session_maker() as session:
         if data.all_masters:
             # Get all users who have a master profile
@@ -858,26 +1227,30 @@ async def bulk_adjust_points(data: BulkPointAdjustment):
             users = (await session.execute(stmt)).scalars().all()
         else:
             raise HTTPException(status_code=400, detail="No masters specified")
-            
-        for user in users:
-            user.points += data.amount
-            session.add(Transaction(
-                user_id=user.id,
-                amount=data.amount,
-                type=TransactionType.ADMIN_ADJUSTMENT,
-                description=data.description
-            ))
-            # Notification
-            await notify_user(
-                user.telegram_id,
-                f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\nВаш текущий баланс: <b>{user.points} ₸</b>"
-            )
-            
-        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(users)}, Reason: {data.description}", admin_id=current_user.id)
-        await session.commit()
-        return {"status": "success", "count": len(users)}
 
-@app.get("/api/v1/logs", dependencies=[Depends(verify_api_key)])
+        skipped = 0
+        for user in users:
+            try:
+                await billing.adjust(session, user.id, data.amount, TransactionType.ADMIN_ADJUSTMENT, data.description)
+            except billing.InsufficientFunds:
+                skipped += 1  # a negative adjustment must not push a balance below zero
+                continue
+            notifications.append((
+                user.telegram_id,
+                f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\n"
+                f"Ваш текущий баланс: <b>{user.points} ₸</b>"
+            ))
+
+        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(notifications)}, Skipped: {skipped}, Reason: {data.description}", admin_id=current_user.id)
+        await session.commit()
+
+    # Notify only after commit; small pause to respect Telegram rate limits
+    for tg_id, text in notifications:
+        await notify_user(tg_id, text)
+        await asyncio.sleep(0.05)
+    return {"status": "success", "count": len(notifications), "skipped": skipped}
+
+@app.get("/api/v1/logs", dependencies=[Depends(SUPERADMIN)])
 async def list_admin_logs(skip: int = 0, limit: int = 50):
     """Returns administrative logs with pagination."""
     async with async_session_maker() as session:
@@ -907,11 +1280,11 @@ async def list_admin_logs(skip: int = 0, limit: int = 50):
 
 # --- BACKUP ENDPOINTS ---
 
-@app.get("/api/v1/backups", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/backups", dependencies=[Depends(SUPERADMIN)])
 async def list_backups():
     return backup_util.list_backups()
 
-@app.post("/api/v1/backups", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/backups", dependencies=[Depends(SUPERADMIN)])
 async def trigger_backup(current_user: User = Depends(get_current_user)):
     filename = await backup_util.create_backup()
     async with async_session_maker() as session:
@@ -919,14 +1292,14 @@ async def trigger_backup(current_user: User = Depends(get_current_user)):
         await session.commit()
     return {"status": "success", "filename": filename}
 
-@app.get("/api/v1/backups/{filename}", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/backups/{filename}", dependencies=[Depends(SUPERADMIN)])
 async def download_backup(filename: str):
     path = backup_util.get_backup_path(filename)
     if not path:
         raise HTTPException(status_code=404, detail="Backup file not found")
     return FileResponse(path, filename=filename, media_type='application/json')
 
-@app.delete("/api/v1/backups/{filename}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/v1/backups/{filename}", dependencies=[Depends(SUPERADMIN)])
 async def delete_backup(filename: str, current_user: User = Depends(get_current_user)):
     success = backup_util.delete_backup(filename)
     if not success:

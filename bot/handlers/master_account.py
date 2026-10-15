@@ -35,11 +35,11 @@ async def show_profile(message: Message):
         
         text = (
             f"👤 <b>Ваш профиль</b>\n"
-            f"Имя: {user.full_name}\n"
+            f"Имя: {esc(user.full_name)}\n"
             f"Рейтинг: {profile.rating:.1f} ⭐\n"
             f"Статус: {status_emoji}\n"
             f"Баланс: {points} баллов\n\n"
-            f"Описание: {profile.description or '—'}\n"
+            f"Описание: {esc(profile.description or '—')}\n"
             f"Стаж: {profile.experience or '—'}"
         )
         
@@ -64,7 +64,7 @@ async def process_edit_name(message: Message, state: FSMContext):
         await session.commit()
     
     await state.clear()
-    await message.answer(f"✅ Имя успешно изменено на: <b>{message.text}</b>", parse_mode="HTML")
+    await message.answer(f"✅ Имя успешно изменено на: <b>{esc(message.text)}</b>", parse_mode="HTML")
     await show_profile(message)
 
 @router.callback_query(F.data == "edit_categories")
@@ -273,7 +273,7 @@ async def show_available_orders(message: Message):
     text = f"🔄 <b>Доступные заказы ({len(orders)}):</b>\n\n"
     keyboard = []
     for o in orders:
-        text += f"📦 <b>{o.category.name}</b>\n💰 Бюджет: {o.budget or 'Договорная'}\n📍 {o.district.name if o.district else '—'}\n\n"
+        text += f"📦 <b>{esc(o.category.name)}</b>\n💰 Бюджет: {o.budget or 'Договорная'}\n📍 {esc(o.district.name if o.district else '—')}\n\n"
         keyboard.append([InlineKeyboardButton(text=f"📥 Заказ №{o.id}", callback_data=f"master_view_order:{o.id}")])
     await message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
@@ -283,7 +283,7 @@ async def show_active_orders(message: Message):
         stmt = select(MasterProfile).join(User).where(User.telegram_id == message.chat.id)
         master = (await session.execute(stmt)).scalar_one_or_none()
         if not master: return
-        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == 'accepted', Order.status == OrderStatus.ACTIVE).options(selectinload(Order.category), selectinload(Order.client)).order_by(Order.created_at.desc())
+        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.ACTIVE).options(selectinload(Order.category), selectinload(Order.client)).order_by(Order.created_at.desc())
         orders = (await session.execute(stmt)).scalars().all()
     if not orders:
         await message.answer("⏳ У вас пока нет активных заказов.", reply_markup=get_orders_menu())
@@ -291,11 +291,11 @@ async def show_active_orders(message: Message):
     text = "⚡️ <b>Заказы в работе:</b>\n"
     keyboard = []
     for o in orders:
-        link = f" (@{o.client.username})" if o.client.username else ""
+        link = f" (@{esc(o.client.username)})" if o.client.username else ""
         text += (
-            f"\n🏷 <b>{o.category.name}</b>\n"
-            f"👤 Клиент: {o.client.full_name}{link}\n"
-            f"📱 Телефон: <code>{o.client.phone_number}</code>\n"
+            f"\n🏷 <b>{esc(o.category.name)}</b>\n"
+            f"👤 Клиент: {esc(o.client.full_name)}{link}\n"
+            f"📱 Телефон: <code>{esc(o.client.phone_number)}</code>\n"
         )
         keyboard.append([InlineKeyboardButton(text=f"✅ Завершить заказ №{o.id}", callback_data=f"master_request_complete:{o.id}")])
     
@@ -334,14 +334,14 @@ async def show_completed_orders(message: Message):
         stmt = select(MasterProfile).join(User).where(User.telegram_id == message.chat.id)
         master = (await session.execute(stmt)).scalar_one_or_none()
         if not master: return
-        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == 'accepted', Order.status == OrderStatus.COMPLETED).options(selectinload(Order.category)).order_by(Order.created_at.desc())
+        stmt = select(Order).join(Bid).where(Bid.master_id == master.id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.COMPLETED).options(selectinload(Order.category)).order_by(Order.created_at.desc())
         orders = (await session.execute(stmt)).scalars().all()
     if not orders:
         await message.answer("✅ У вас пока нет выполненных заказов.")
         return
     text = "✅ <b>История завершенных заказов:</b>\n"
     for o in orders:
-        text += f"\n📦 <b>{o.category.name}</b>\n📅 {o.created_at.strftime('%d.%m.%Y')}\n"
+        text += f"\n📦 <b>{esc(o.category.name)}</b>\n📅 {o.created_at.strftime('%d.%m.%Y')}\n"
     await message.answer(text, parse_mode="HTML")
 
 # --- ORDER DETAILS ---
@@ -365,10 +365,10 @@ async def master_view_order_callback(callback: CallbackQuery):
             pass
             
     text = (
-        f"📦 <b>Заказ №{order.id}: {order.category.name}</b>\n\n"
-        f"📝 {order.description}\n"
+        f"📦 <b>Заказ №{order.id}: {esc(order.category.name)}</b>\n\n"
+        f"📝 {esc(order.description)}\n"
         f"💰 Бюджет: {order.budget or 'Договорная'}\n"
-        f"📍 Район: {order.district.name if order.district else '—'}\n\n"
+        f"📍 Район: {esc(order.district.name if order.district else '—')}\n\n"
         f"🏷️ <b>Стоимость отклика: 50 баллов.</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -378,6 +378,12 @@ async def master_view_order_callback(callback: CallbackQuery):
     await callback.answer()
 
 # --- BIDDING FLOW ---
+from bot.services.billing import BID_COST
+from bot.services.bidding import bid_block_reason, place_bid
+from bot.utils.parsing import parse_amount
+from bot.utils.text import esc
+from database.models import BidStatus
+
 @router.callback_query(F.data.startswith("start_bid:"))
 async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
     order_id = int(callback.data.split(":")[1])
@@ -385,9 +391,12 @@ async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
         free_orders = settings.free_orders_enabled if settings else False
         
-        user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalar_one_or_none()
-        if not free_orders and (not user or user.points < 50):
-            await callback.answer("❌ Недостаточно баллов (нужно 50).", show_alert=True)
+        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == callback.from_user.id))).scalar_one_or_none()
+        reason = await bid_block_reason(session, user, order_id)
+        if reason is None and not free_orders and user.points < BID_COST:
+            reason = f"❌ Недостаточно баллов (нужно {BID_COST})."
+        if reason:
+            await callback.answer(reason, show_alert=True)
             return
     await state.update_data(bid_order_id=order_id)
     await state.set_state(BidStates.entering_price)
@@ -396,35 +405,39 @@ async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
 
 @router.message(BidStates.entering_price)
 async def process_bid_price(message: Message, state: FSMContext):
+    if parse_amount(message.text) is None:
+        await message.answer("⚠️ Введите цену числом, например: <code>15000</code>", parse_mode="HTML")
+        return
     await state.update_data(bid_price=message.text)
     await state.set_state(BidStates.entering_message)
     await message.answer("📩 <b>Напишите сообщение для клиента:</b>", parse_mode="HTML")
 
 @router.message(BidStates.entering_message)
 async def process_bid_message(message: Message, state: FSMContext):
+    import html
     data = await state.get_data()
     order_id, price_str = data['bid_order_id'], data['bid_price']
+    text = message.text or ""
     async with async_session_maker() as session:
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
         free_orders = settings.free_orders_enabled if settings else False
-        
-        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id))).scalar()
-        
-        if not free_orders:
-            user.points -= 50
-            session.add(Transaction(user_id=user.id, amount=-50, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}"))
-        import re
-        price_val = int("".join(re.findall(r'\d+', price_str))) if re.findall(r'\d+', price_str) else 0
-        bid = Bid(order_id=order_id, master_id=user.master_profile.id, suggested_price=price_val, message=message.text)
-        session.add(bid)
-        await session.flush()
-        order = (await session.execute(select(Order).options(selectinload(Order.client)).where(Order.id == order_id))).scalar()
-        client_tg_id = order.client.telegram_id
+        result = await place_bid(session, message.chat.id, order_id, parse_amount(price_str), text, free_orders)
+        if result.error:
+            await state.clear()
+            await message.answer(result.error)
+            return
         await session.commit()
     await message.answer("✅ Отклик отправлен!")
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔍 Детали и Принять", callback_data=f"client_view_order:{order_id}")]])
-    await message.bot.send_message(client_tg_id, f"🔔 <b>Новый отклик!</b>\n💰 Цена: {price_str}\n👷 Мастер: {user.full_name}\n📩: {message.text[:100]}...", parse_mode="HTML", reply_markup=kb)
+    preview = html.escape(text[:100]) + ("..." if len(text) > 100 else "")
+    try:
+        await message.bot.send_message(
+            result.client_telegram_id,
+            f"🔔 <b>Новый отклик!</b>\n💰 Цена: {html.escape(price_str)}\n👷 Мастер: {html.escape(result.master_user.full_name)}\n📩: {preview}",
+            parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass  # the bid is saved; the client will see it in "My requests"
 
 # --- OTHER HANDLERS ---
 @router.message(F.text == "📊 Статистика")
@@ -441,14 +454,14 @@ async def show_stats_handler(message: Message):
         completed = (await session.execute(
             select(func.count(Order.id))
             .join(Bid)
-            .where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.COMPLETED)
+            .where(Bid.master_id == master_id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.COMPLETED)
         )).scalar() or 0
         
         # 2. Count active orders
         active = (await session.execute(
             select(func.count(Order.id))
             .join(Bid)
-            .where(Bid.master_id == master_id, Bid.status == 'accepted', Order.status == OrderStatus.ACTIVE)
+            .where(Bid.master_id == master_id, Bid.status == BidStatus.ACCEPTED, Order.status == OrderStatus.ACTIVE)
         )).scalar() or 0
         
         # 3. Calculate total lifetime points (non-negative transactions)
@@ -492,7 +505,7 @@ async def show_rating_handler(message: Message):
         await message.answer("⭐ Еще нет отзывов.")
         return
     text = f"⭐ <b>Рейтинг: {avg:.1f}/5.0</b>\n\n💬 <b>Последние отзывы:</b>\n"
-    for r in reviews[:10]: text += f"\n{'⭐'*r.rating} ({r.created_at.strftime('%d.%m.%Y')})\n<i>«{r.comment}»</i>\n"
+    for r in reviews[:10]: text += f"\n{'⭐'*r.rating} ({r.created_at.strftime('%d.%m.%Y')})\n<i>«{esc(r.comment)}»</i>\n"
     await message.answer(text, parse_mode="HTML")
 
 @router.message(F.text == "💰 Баланс")
@@ -590,7 +603,7 @@ async def show_transactions_handler(message: Message):
     for t in txs:
         sign = "+" if t.amount > 0 else ""
         date = t.created_at.strftime("%d.%m %H:%M")
-        text += f"\n📅 {date} | <b>{sign}{t.amount}</b>\n└ {t.description or '—'}"
+        text += f"\n📅 {date} | <b>{sign}{t.amount}</b>\n└ {esc(t.description or '—')}"
         
     await message.answer(text, parse_mode="HTML")
 

@@ -6,7 +6,7 @@ from passlib.context import CryptContext
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-async def set_admin_password(username, password):
+async def set_admin_password(username, password, role="superadmin"):
     async with async_session_maker() as session:
         stmt = select(User).where(User.username == username)
         user = (await session.execute(stmt)).scalar_one_or_none()
@@ -23,12 +23,16 @@ async def set_admin_password(username, password):
         
         user.hashed_password = pwd_context.hash(password)
         user.role = UserRole.ADMIN
+        user.admin_role = role
         await session.commit()
-        print(f"Successfully set password for admin: {username}")
+        print(f"Successfully set password for admin: {username} (role: {role})")
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python set_admin.py <username> <password>")
+        print("Usage: python set_admin.py <username> <password> [superadmin|moderator|finance]")
     else:
-        asyncio.run(set_admin_password(sys.argv[1], sys.argv[2]))
+        role = sys.argv[3] if len(sys.argv) > 3 else "superadmin"
+        if role not in ("superadmin", "moderator", "finance"):
+            raise SystemExit("role must be superadmin, moderator or finance")
+        asyncio.run(set_admin_password(sys.argv[1], sys.argv[2], role))

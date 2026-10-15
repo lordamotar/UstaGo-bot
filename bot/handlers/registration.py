@@ -15,6 +15,7 @@ from bot.keyboards.registration import (
     get_photo_done_keyboard, 
     get_phone_sharing_keyboard
 )
+from bot.utils.text import esc
 
 @router.message(RegistrationStates.entering_name)
 async def process_name(message: Message, state: FSMContext):
@@ -219,7 +220,7 @@ async def process_phone(message: Message, state: FSMContext):
                 try:
                     await message.bot.send_message(
                         inviter.telegram_id,
-                        f"👋 Ваш друг <b>{user.full_name}</b> зарегистрировался как мастер!\n"
+                        f"👋 Ваш друг <b>{esc(user.full_name)}</b> зарегистрировался как мастер!\n"
                         f"Как только он пройдет модерацию, вы получите свой бонус.",
                         parse_mode="HTML"
                     )
@@ -228,11 +229,11 @@ async def process_phone(message: Message, state: FSMContext):
     # Notify Admins with action buttons
     admin_text = (
         "🆕 <b>Новая заявка от Мастера!</b>\n\n"
-        f"👤 Фио: {data['full_name']}\n"
+        f"👤 Фио: {esc(data['full_name'])}\n"
         f"📱 Телефон: {phone}\n"
         f"📅 Стаж: {data['experience']}\n"
-        f"📝 Описание: {data['description']}\n"
-        f"TG: @{message.from_user.username or 'no_username'} (<code>{message.from_user.id}</code>)"
+        f"📝 Описание: {esc(data['description'])}\n"
+        f"TG: @{esc(message.from_user.username or 'no_username')} (<code>{message.from_user.id}</code>)"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[

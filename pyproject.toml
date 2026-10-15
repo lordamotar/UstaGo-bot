@@ -21,4 +21,6 @@ dependencies = [
     "sentry-sdk[fastapi]",
     "pytest",
     "pytest-asyncio",
+    "aiosqlite",
+    "httpx",
 ]
