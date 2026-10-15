@@ -378,85 +378,42 @@ async def client_cancel_order_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("client_confirm_cancel:"))
 async def client_confirm_cancel_order_callback(callback: CallbackQuery):
+    from bot.services.orders import cancel_order
     order_id = int(callback.data.split(":")[1])
-    
+
     async with async_session_maker() as session:
-        # Load order with relations
-        stmt = select(Order).options(
-            selectinload(Order.bids).joinedload(Bid.master).joinedload(MasterProfile.user)
-        ).where(Order.id == order_id)
-        res = await session.execute(stmt)
-        order = res.scalar_one_or_none()
-        
+        order = (await session.execute(
+            select(Order).options(selectinload(Order.client)).where(Order.id == order_id)
+        )).scalar_one_or_none()
         if not order:
             await callback.answer("❌ Заказ не найден.")
             return
-            
-        if order.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+        if order.client.telegram_id != callback.from_user.id:
+            await callback.answer("⛔ Отменить заказ может только его владелец.", show_alert=True)
+            return
+        if order.status in (OrderStatus.COMPLETED, OrderStatus.CANCELLED):
             await callback.answer("⚠️ Вы не можете отменить этот заказ.")
             return
-            
-        old_status = order.status
-        order.status = OrderStatus.CANCELLED
-        
-        # Notify all masters who bid on this order
-        bidders = [(b.master.user.telegram_id, b.status, b.master.user_id) for b in order.bids if b.status != "rejected"]
-        
+        # Cancels the order and refunds bid fees in ONE transaction
+        notices = await cancel_order(session, order_id)
         await session.commit()
-        
-    await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
-    
-    # Notify master(s) and refund exactly what they paid for this order (never more, never twice)
-    from database.models import Transaction, TransactionType
-    from sqlalchemy import or_, func
-    fee_desc = f"Отклик на заказ №{order_id}"
-    for tid, status, master_user_id in bidders:
-        try:
-            refunded = 0
-            async with async_session_maker() as session:
-                paid = (await session.execute(
-                    select(func.coalesce(func.sum(-Transaction.amount), 0)).where(
-                        Transaction.user_id == master_user_id,
-                        Transaction.type == TransactionType.CONTACT_FEE,
-                        or_(Transaction.order_id == order_id, Transaction.description == fee_desc),
-                    )
-                )).scalar() or 0
-                already = (await session.execute(
-                    select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-                        Transaction.user_id == master_user_id,
-                        Transaction.type == TransactionType.REFUND,
-                        Transaction.order_id == order_id,
-                    )
-                )).scalar() or 0
-                to_refund = paid - already
-                if to_refund > 0:
-                    master_user = (await session.execute(
-                        select(User).where(User.id == master_user_id).with_for_update()
-                    )).scalar_one()
-                    master_user.points += to_refund
-                    session.add(Transaction(
-                        user_id=master_user_id,
-                        amount=to_refund,
-                        type=TransactionType.REFUND,
-                        order_id=order_id,
-                        description=f"Возврат баллов: заказ №{order_id} отменен клиентом"
-                    ))
-                    await session.commit()
-                    refunded = to_refund
 
-            status_desc = "был в работе" if status == "accepted" else "был предложен"
-            refund_line = f"💰 <b>{refunded} баллов возвращены на ваш баланс.</b>\n\n" if refunded else "\n"
+    await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
+
+    for n in notices:
+        status_desc = "был в работе" if n.bid_status == "accepted" else "был предложен"
+        refund_line = f"💰 <b>{n.refunded} баллов возвращены на ваш баланс.</b>\n\n" if n.refunded else "\n"
+        try:
             await callback.bot.send_message(
-                tid,
+                n.master_telegram_id,
                 f"🗑️ <b>Заявка №{order_id} была удалена клиентом.</b>\n"
                 f"Ваш отклик {status_desc}.\n"
                 + refund_line +
                 "Вы по-прежнему можете откликаться на другие заказы!",
                 parse_mode="HTML"
             )
-        except Exception as e:
-            print(f"Error notifying/refunding master {tid}: {e}")
-        
+        except Exception:
+            pass
     await callback.answer("Заказ отменен. Баллы мастерам возвращены.")
 
 @router.callback_query(F.data.startswith("start_review:"))

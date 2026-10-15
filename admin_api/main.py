@@ -14,6 +14,7 @@ from bot.core.config import config
 from aiogram import Bot
 from fastapi.responses import FileResponse
 import admin_api.backups as backup_util
+from bot.services import billing
 import asyncio
 import sentry_sdk
 import random
@@ -502,7 +503,7 @@ async def update_settings(data: SystemSettingsUpdate, current_user: User = Depen
         if data.bank_details is not None: settings.bank_details = data.bank_details
         if data.free_orders_enabled is not None: settings.free_orders_enabled = data.free_orders_enabled
         
-        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.json(exclude_none=True)}", admin_id=current_user.id)
+        await log_action(session, "UPDATE_SETTINGS", f"Settings updated: {data.model_dump_json(exclude_none=True)}", admin_id=current_user.id)
         await session.commit()
         return {"status": "success"}
 
@@ -621,39 +622,55 @@ async def get_master_details(master_id: int):
 
 @app.patch("/api/v1/masters/{master_id}", dependencies=[Depends(verify_api_key)])
 async def update_master_status(master_id: int, data: MasterUpdate, current_user: User = Depends(get_current_user)):
-    """Updates master status or accreditation."""
+    """Updates master status or accreditation. Approving pays the welcome/referral bonuses exactly like the bot does."""
+    notifications = []
     async with async_session_maker() as session:
-        master = (await session.get(MasterProfile, master_id))
+        master = await session.get(MasterProfile, master_id)
         if not master:
             raise HTTPException(status_code=404, detail="Master not found")
-            
+
         if data.status is not None:
-            master.status = data.status
+            if data.status == MasterStatus.APPROVED:
+                result = await billing.approve_master(session, master)
+                if result.granted:
+                    user = await session.get(User, master.user_id)
+                    bonus = f"\n🎁 Вам начислено <b>{result.welcome} приветственных баллов</b>." if result.welcome else ""
+                    notifications.append((user.telegram_id, f"🎉 <b>Ваш профиль мастера одобрен!</b>{bonus}\nТеперь вы можете откликаться на заказы."))
+                    if result.inviter_telegram_id:
+                        notifications.append((
+                            result.inviter_telegram_id,
+                            f"🎁 <b>Бонус за реферала!</b>\nПриглашенный вами мастер <b>{user.full_name}</b> прошёл проверку. "
+                            f"Вам начислено <b>{result.inviter_bonus} баллов</b>!",
+                        ))
+            else:
+                master.status = data.status
         if data.is_accredited is not None:
             master.is_accredited = data.is_accredited
-            
+
         await log_action(session, "UPDATE_MASTER", f"Master #{master_id}: {data.model_dump_json(exclude_none=True)}", admin_id=current_user.id)
         await session.commit()
-        return {"status": "success", "master_id": master_id}
+
+    for tg_id, text in notifications:
+        await notify_user(tg_id, text)
+    return {"status": "success", "master_id": master_id}
 
 @app.post("/api/v1/masters/{master_id}/adjust-points", dependencies=[Depends(verify_api_key)])
 async def adjust_master_points(master_id: int, data: PointAdjustment, current_user: User = Depends(get_current_user)):
-    """Manually adjust master points (add/remove)."""
+    """Manually adjust master points (add/remove). A balance can never become negative."""
+    if data.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount must not be zero")
     async with async_session_maker() as session:
         # Get user linked to master
         stmt = select(User).join(MasterProfile).where(MasterProfile.id == master_id)
         user = (await session.execute(stmt)).scalar_one_or_none()
-        
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found for this master")
-            
-        user.points += data.amount
-        session.add(Transaction(
-            user_id=user.id,
-            amount=data.amount,
-            type=TransactionType.ADMIN_ADJUSTMENT,
-            description=data.description
-        ))
+
+        try:
+            user = await billing.adjust(session, user.id, data.amount, TransactionType.ADMIN_ADJUSTMENT, data.description)
+        except billing.InsufficientFunds:
+            raise HTTPException(status_code=400, detail="Insufficient balance: points cannot go below zero")
         await log_action(session, "ADJUST_POINTS", f"Master #{master_id}: {data.amount} ({data.description})", admin_id=current_user.id)
         await session.commit()
         return {"status": "success", "new_balance": user.points}
@@ -831,13 +848,8 @@ async def review_topup(request_id: int, data: TopUpReview, current_user: User = 
 
         if data.status == "APPROVED":
             req.status = "APPROVED"
-            user.points += req.amount
-            session.add(Transaction(
-                user_id=user.id,
-                amount=req.amount,
-                type=TransactionType.ADMIN_ADJUSTMENT,  # TODO: dedicated TOPUP type (needs an Alembic enum migration)
-                description=f"Пополнение баланса через {req.method} (Admin API)"
-            ))
+            await billing.credit(session, user.id, req.amount, TransactionType.TOPUP,
+                                 f"Пополнение баланса через {req.method} (Admin API)")
             message = (
                 f"✅ <b>Баланс пополнен!</b>\n\nСумма: <b>{req.amount} ₸</b>\nСпособ: {req.method}\n"
                 f"Ваш текущий баланс: <b>{user.points} ₸</b>"
@@ -902,28 +914,27 @@ async def bulk_adjust_points(data: BulkPointAdjustment, current_user: User = Dep
         else:
             raise HTTPException(status_code=400, detail="No masters specified")
 
+        skipped = 0
         for user in users:
-            user.points += data.amount
-            session.add(Transaction(
-                user_id=user.id,
-                amount=data.amount,
-                type=TransactionType.ADMIN_ADJUSTMENT,
-                description=data.description
-            ))
+            try:
+                await billing.adjust(session, user.id, data.amount, TransactionType.ADMIN_ADJUSTMENT, data.description)
+            except billing.InsufficientFunds:
+                skipped += 1  # a negative adjustment must not push a balance below zero
+                continue
             notifications.append((
                 user.telegram_id,
                 f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\n"
                 f"Ваш текущий баланс: <b>{user.points} ₸</b>"
             ))
 
-        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(users)}, Reason: {data.description}", admin_id=current_user.id)
+        await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(notifications)}, Skipped: {skipped}, Reason: {data.description}", admin_id=current_user.id)
         await session.commit()
 
     # Notify only after commit; small pause to respect Telegram rate limits
     for tg_id, text in notifications:
         await notify_user(tg_id, text)
         await asyncio.sleep(0.05)
-    return {"status": "success", "count": len(notifications)}
+    return {"status": "success", "count": len(notifications), "skipped": skipped}
 
 @app.get("/api/v1/logs", dependencies=[Depends(verify_api_key)])
 async def list_admin_logs(skip: int = 0, limit: int = 50):

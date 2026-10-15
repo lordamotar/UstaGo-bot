@@ -78,15 +78,9 @@ async def process_desc(message: Message, state: FSMContext):
 
 @router.message(OrderCreationStates.entering_budget)
 async def process_budget(message: Message, state: FSMContext):
-    budget_text = message.text
-    budget = None
-    try:
-        import re
-        nums = re.findall(r'\d+', budget_text)
-        if nums:
-            budget = int(nums[0])
-    except Exception:
-        pass
+    from bot.utils.parsing import parse_amount
+    budget_text = message.text or ""
+    budget = parse_amount(budget_text)
     
     await state.update_data(budget=budget, budget_text=budget_text)
     await state.set_state(OrderCreationStates.selecting_district)
@@ -211,7 +205,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         masters_to_notify = res.scalars().all()
         
         from datetime import datetime
-        now_str = datetime.now().strftime("%H:%M")
+        from datetime import timezone, timedelta
+        now_str = datetime.now(timezone(timedelta(hours=config.TZ_OFFSET_HOURS))).strftime("%H:%M")
         
         def is_in_dnd(now_s, start_s, end_s):
             if not start_s or not end_s: return False
