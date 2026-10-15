@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, Request
+from admin_api import security
+from admin_api.security import ROLE_SUPER, ROLE_MODERATOR, ROLE_FINANCE, ADMIN_ROLES, effective_role
 from sqlalchemy import select, func, update, or_, exists
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
@@ -105,25 +107,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 # --- AUTH UTILS ---
 
-# 2FA temporary code storage: {username: {"code": "123456", "expires": timestamp}}
-_2fa_codes: dict = {}
-
-# Brute-force protection for login (in-memory, per username)
-_login_failures: dict = {}
-MAX_LOGIN_FAILURES = 5
-LOGIN_LOCK_SECONDS = 15 * 60
-
-def _check_login_lock(username: str):
-    entry = _login_failures.get(username)
-    if entry and entry["count"] >= MAX_LOGIN_FAILURES:
-        if time.time() < entry["until"]:
-            raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
-        _login_failures.pop(username, None)
-
-def _register_login_failure(username: str):
-    entry = _login_failures.setdefault(username, {"count": 0, "until": 0})
-    entry["count"] += 1
-    entry["until"] = time.time() + LOGIN_LOCK_SECONDS
+_DUMMY_HASH = pwd_context.hash(secrets.token_urlsafe(8))
 
 def verify_password(plain_password, hashed_password):
     if not hashed_password: return False
@@ -165,41 +149,48 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
             raise HTTPException(status_code=403, detail="Not enough permissions")
         return user
 
+def require_role(*allowed: str):
+    """Dependency factory: SUPERADMIN always passes, the listed roles pass, everyone else gets 403 (empty list = superadmin only)."""
+    async def checker(current_user: User = Depends(get_current_user)):
+        role = effective_role(current_user)
+        if role != ROLE_SUPER and role not in allowed:
+            raise HTTPException(status_code=403, detail="Недостаточно прав для этого действия")
+        return current_user
+    return checker
+
+
+MODERATION = require_role(ROLE_MODERATOR)   # masters, order cancellation
+FINANCE = require_role(ROLE_FINANCE)        # points, top-ups
+SUPERADMIN = require_role()                 # settings, directories, logs, backups, admins
+
 # --- AUTH ENDPOINTS ---
 
 @app.post("/api/v1/auth/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    ip = security.client_ip(request)
+    await security.ensure_login_allowed(form_data.username, ip)
+
     async with async_session_maker() as session:
         stmt = select(User).where(User.username == form_data.username)
         user = (await session.execute(stmt)).scalar_one_or_none()
-        
-        _check_login_lock(form_data.username)
-        if not user:
-            _register_login_failure(form_data.username)
-            raise HTTPException(status_code=401, detail="Incorrect username or password")
 
-        is_valid = verify_password(form_data.password, user.hashed_password)
-
+        # bcrypt always runs (dummy hash for unknown users) so response time does not reveal which usernames exist
+        is_valid = verify_password(form_data.password, user.hashed_password if user else _DUMMY_HASH) and bool(user)
         if not is_valid:
-            _register_login_failure(form_data.username)
+            await security.register_login_failure(form_data.username, ip)
             raise HTTPException(
                 status_code=401,
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         if user.role != UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Not enough permissions")
-        
+
         # Generate 2FA code and send to Telegram
         code = str(secrets.randbelow(900000) + 100000)
-        _2fa_codes[user.username] = {
-            "code": code,
-            "expires": time.time() + 300,  # 5 minutes TTL
-            "attempts": 0
-        }
-        
-        # Send code via Telegram
+        await security.save_2fa_code(user.username, code)
+
         try:
             await bot_instance.send_message(
                 user.telegram_id,
@@ -210,9 +201,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                 parse_mode="HTML"
             )
         except Exception as e:
-            print(f"Failed to send 2FA code to {user.telegram_id}: {e}")
+            logging.getLogger("admin_api").error("Failed to send 2FA code to %s: %s", user.telegram_id, e)
             raise HTTPException(status_code=500, detail="Failed to send 2FA code")
-        
+
         return {"requires_2fa": True, "message": "2FA code sent to your Telegram"}
 
 class TwoFAVerify(BaseModel):
@@ -220,30 +211,22 @@ class TwoFAVerify(BaseModel):
     code: str
 
 @app.post("/api/v1/auth/verify-2fa")
-async def verify_2fa(data: TwoFAVerify):
-    stored = _2fa_codes.get(data.username)
-    
-    if not stored:
-        raise HTTPException(status_code=400, detail="No 2FA code requested. Please login again.")
-    
-    if time.time() > stored["expires"]:
-        del _2fa_codes[data.username]
-        raise HTTPException(status_code=400, detail="2FA code expired. Please login again.")
-    
-    if not hmac.compare_digest(stored["code"].encode(), data.code.encode()):
-        stored["attempts"] = stored.get("attempts", 0) + 1
-        if stored["attempts"] >= 5:
-            del _2fa_codes[data.username]
+async def verify_2fa(data: TwoFAVerify, request: Request):
+    ip = security.client_ip(request)
+    await security.ensure_login_allowed(data.username, ip)
+
+    result = await security.check_2fa_code(data.username, data.code)
+    if result == "missing":
+        raise HTTPException(status_code=400, detail="No 2FA code requested or it expired. Please login again.")
+    if result in ("wrong", "locked"):
+        await security.register_login_failure(data.username, ip)
+        if result == "locked":
             raise HTTPException(status_code=400, detail="Too many invalid codes. Please login again.")
         raise HTTPException(status_code=400, detail="Invalid 2FA code")
-    
-    # Code is valid — clean up and issue JWT
-    del _2fa_codes[data.username]
-    _login_failures.pop(data.username, None)
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    await security.clear_login_failures(data.username, ip)
     access_token = create_access_token(
-        data={"sub": data.username}, expires_delta=access_token_expires
+        data={"sub": data.username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -253,7 +236,8 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         "id": current_user.id,
         "username": current_user.username,
         "full_name": current_user.full_name,
-        "role": current_user.role
+        "role": current_user.role,
+        "admin_role": effective_role(current_user),
     }
 
 class PasswordChange(BaseModel):
@@ -310,6 +294,36 @@ def _csv_response(filename: str, header: list, rows: list) -> StreamingResponse:
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+class AdminRoleUpdate(BaseModel):
+    admin_role: str
+
+
+@app.get("/api/v1/admins", dependencies=[Depends(SUPERADMIN)])
+async def list_admins():
+    async with async_session_maker() as session:
+        admins = (await session.execute(select(User).where(User.role == UserRole.ADMIN).order_by(User.id))).scalars().all()
+        return [{"id": a.id, "username": a.username, "full_name": a.full_name, "telegram_id": a.telegram_id,
+                 "admin_role": effective_role(a), "has_password": bool(a.hashed_password)} for a in admins]
+
+
+@app.patch("/api/v1/admins/{user_id}", dependencies=[Depends(SUPERADMIN)])
+async def set_admin_role(user_id: int, data: AdminRoleUpdate, current_user: User = Depends(get_current_user)):
+    if data.admin_role not in ADMIN_ROLES:
+        raise HTTPException(status_code=400, detail=f"Роль должна быть одной из: {', '.join(ADMIN_ROLES)}")
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Нельзя менять собственную роль")
+    async with async_session_maker() as session:
+        target = (await session.execute(select(User).where(User.id == user_id).with_for_update())).scalar_one_or_none()
+        if not target or target.role != UserRole.ADMIN:
+            raise HTTPException(status_code=404, detail="Администратор не найден")
+        old = effective_role(target)
+        target.admin_role = data.admin_role
+        await log_action(session, "SET_ADMIN_ROLE", f"Admin #{target.id} ({target.username}): {old} -> {data.admin_role}",
+                         admin_id=current_user.id)
+        await session.commit()
+    return {"status": "success", "admin_role": data.admin_role}
 
 
 @app.get("/api/v1/health")
@@ -563,7 +577,7 @@ async def get_settings():
             await session.refresh(settings)
         return settings
 
-@app.patch("/api/v1/settings", dependencies=[Depends(verify_api_key)])
+@app.patch("/api/v1/settings", dependencies=[Depends(SUPERADMIN)])
 async def update_settings(data: SystemSettingsUpdate, current_user: User = Depends(get_current_user)):
     async with async_session_maker() as session:
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
@@ -765,7 +779,7 @@ async def get_master_details(master_id: int):
             "districts": [{"id": d.id, "name": d.name} for d in master.districts]
         }
 
-@app.patch("/api/v1/masters/{master_id}", dependencies=[Depends(verify_api_key)])
+@app.patch("/api/v1/masters/{master_id}", dependencies=[Depends(MODERATION)])
 async def update_master_status(master_id: int, data: MasterUpdate, current_user: User = Depends(get_current_user)):
     """Updates master status or accreditation. Approving pays the welcome/referral bonuses exactly like the bot does."""
     notifications = []
@@ -799,7 +813,7 @@ async def update_master_status(master_id: int, data: MasterUpdate, current_user:
         await notify_user(tg_id, text)
     return {"status": "success", "master_id": master_id}
 
-@app.post("/api/v1/masters/{master_id}/adjust-points", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/masters/{master_id}/adjust-points", dependencies=[Depends(FINANCE)])
 async def adjust_master_points(master_id: int, data: PointAdjustment, current_user: User = Depends(get_current_user)):
     """Manually adjust master points (add/remove). A balance can never become negative."""
     if data.amount == 0:
@@ -929,7 +943,7 @@ async def get_order_details(order_id: int):
         }
 
 
-@app.post("/api/v1/orders/{order_id}/cancel", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/orders/{order_id}/cancel", dependencies=[Depends(MODERATION)])
 async def admin_cancel_order(order_id: int, current_user: User = Depends(get_current_user)):
     """Cancels an open order (spam, fraud) and refunds the bid fees of every master who responded."""
     async with async_session_maker() as session:
@@ -966,14 +980,14 @@ async def list_categories(skip: int = 0, limit: int = 500):
         cats = (await session.execute(stmt)).scalars().all()
         return {"total": total, "items": cats}
 
-@app.post("/api/v1/categories", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/categories", dependencies=[Depends(SUPERADMIN)])
 async def add_category(data: NameUpdate):
     async with async_session_maker() as session:
         session.add(Category(name=data.name))
         await session.commit()
         return {"status": "created"}
 
-@app.delete("/api/v1/categories/{cat_id}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/v1/categories/{cat_id}", dependencies=[Depends(SUPERADMIN)])
 async def delete_category(cat_id: int):
     async with async_session_maker() as session:
         cat = await session.get(Category, cat_id)
@@ -994,14 +1008,14 @@ async def list_districts(skip: int = 0, limit: int = 500):
         dists = (await session.execute(stmt)).scalars().all()
         return {"total": total, "items": dists}
 
-@app.post("/api/v1/districts", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/districts", dependencies=[Depends(SUPERADMIN)])
 async def add_district(data: NameUpdate):
     async with async_session_maker() as session:
         session.add(District(name=data.name))
         await session.commit()
         return {"status": "created"}
 
-@app.delete("/api/v1/districts/{dist_id}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/v1/districts/{dist_id}", dependencies=[Depends(SUPERADMIN)])
 async def delete_district(dist_id: int):
     async with async_session_maker() as session:
         dist = await session.get(District, dist_id)
@@ -1041,7 +1055,7 @@ async def list_topup_requests(status: Optional[str] = "PENDING", skip: int = 0, 
         
         return {"total": total, "items": items}
 
-@app.patch("/api/v1/topups/{request_id}", dependencies=[Depends(verify_api_key)])
+@app.patch("/api/v1/topups/{request_id}", dependencies=[Depends(FINANCE)])
 async def review_topup(request_id: int, data: TopUpReview, current_user: User = Depends(get_current_user)):
     if data.status not in ("APPROVED", "REJECTED"):
         raise HTTPException(status_code=400, detail="status must be APPROVED or REJECTED")
@@ -1108,7 +1122,7 @@ async def list_transactions(skip: int = 0, limit: int = 50):
         
         return {"total": total, "items": items}
 
-@app.post("/api/v1/finance/bulk-adjust-points", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/finance/bulk-adjust-points", dependencies=[Depends(FINANCE)])
 async def bulk_adjust_points(data: BulkPointAdjustment, current_user: User = Depends(get_current_user)):
     """Adjust points for multiple masters or all of them."""
     if data.amount == 0:
@@ -1147,7 +1161,7 @@ async def bulk_adjust_points(data: BulkPointAdjustment, current_user: User = Dep
         await asyncio.sleep(0.05)
     return {"status": "success", "count": len(notifications), "skipped": skipped}
 
-@app.get("/api/v1/logs", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/logs", dependencies=[Depends(SUPERADMIN)])
 async def list_admin_logs(skip: int = 0, limit: int = 50):
     """Returns administrative logs with pagination."""
     async with async_session_maker() as session:
@@ -1177,11 +1191,11 @@ async def list_admin_logs(skip: int = 0, limit: int = 50):
 
 # --- BACKUP ENDPOINTS ---
 
-@app.get("/api/v1/backups", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/backups", dependencies=[Depends(SUPERADMIN)])
 async def list_backups():
     return backup_util.list_backups()
 
-@app.post("/api/v1/backups", dependencies=[Depends(verify_api_key)])
+@app.post("/api/v1/backups", dependencies=[Depends(SUPERADMIN)])
 async def trigger_backup(current_user: User = Depends(get_current_user)):
     filename = await backup_util.create_backup()
     async with async_session_maker() as session:
@@ -1189,14 +1203,14 @@ async def trigger_backup(current_user: User = Depends(get_current_user)):
         await session.commit()
     return {"status": "success", "filename": filename}
 
-@app.get("/api/v1/backups/{filename}", dependencies=[Depends(verify_api_key)])
+@app.get("/api/v1/backups/{filename}", dependencies=[Depends(SUPERADMIN)])
 async def download_backup(filename: str):
     path = backup_util.get_backup_path(filename)
     if not path:
         raise HTTPException(status_code=404, detail="Backup file not found")
     return FileResponse(path, filename=filename, media_type='application/json')
 
-@app.delete("/api/v1/backups/{filename}", dependencies=[Depends(verify_api_key)])
+@app.delete("/api/v1/backups/{filename}", dependencies=[Depends(SUPERADMIN)])
 async def delete_backup(filename: str, current_user: User = Depends(get_current_user)):
     success = backup_util.delete_backup(filename)
     if not success:

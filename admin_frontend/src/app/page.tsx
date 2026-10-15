@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import ChangePasswordModal from '@/components/ChangePasswordModal';
 import FunnelCard from '@/components/FunnelCard';
+import { ROLE_LABEL, useMe } from '@/lib/useMe';
 import { 
   BarChart, 
   Bar, 
@@ -56,6 +57,7 @@ export default function DashboardPage() {
   const [chartLoading, setChartLoading] = useState(false);
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const router = useRouter();
+  const { me, can } = useMe();
 
   const fetchChartData = async (range: string, view: string, custom?: { start: string, end: string }) => {
     try {
@@ -158,7 +160,7 @@ export default function DashboardPage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-10">
         <div>
           <h1 className="text-4xl font-extrabold tracking-tight">Панель управления</h1>
-          <p className="text-muted-foreground mt-1">Добро пожаловать в центр управления UstaGo</p>
+          <p className="text-muted-foreground mt-1">Добро пожаловать в центр управления UstaGo{me ? ` · ${ROLE_LABEL[me.admin_role]}` : ''}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-4 md:mt-0 self-start">
           <button 
@@ -175,6 +177,7 @@ export default function DashboardPage() {
             <ShoppingBag className="w-4 h-4" />
             Заказы
           </button>
+          {can.finance && (
           <button 
             onClick={() => router.push('/finances')}
             className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
@@ -182,6 +185,8 @@ export default function DashboardPage() {
             <CreditCard className="w-4 h-4" />
             Финансы
           </button>
+          )}
+          {can.superadmin && (
           <button 
             onClick={() => router.push('/directories')}
             className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
@@ -189,6 +194,8 @@ export default function DashboardPage() {
             <MapPin className="w-4 h-4" />
             Справочники
           </button>
+          )}
+          {can.superadmin && (
           <button 
             onClick={() => router.push('/logs')}
             className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
@@ -196,6 +203,8 @@ export default function DashboardPage() {
             <History className="w-4 h-4" />
             Логи
           </button>
+          )}
+          {can.superadmin && (
           <button 
             onClick={() => router.push('/backups')}
             className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
@@ -203,6 +212,16 @@ export default function DashboardPage() {
             <Database className="w-4 h-4" />
             Бэкапы
           </button>
+          )}
+          {can.superadmin && (
+            <button 
+              onClick={() => router.push('/admins')}
+              className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
+            >
+              <Settings className="w-4 h-4" />
+              Админы
+            </button>
+          )}
           <button 
             onClick={() => setIsPasswordModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-xl transition-colors"

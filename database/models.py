@@ -69,6 +69,8 @@ class User(Base):
     referred_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     points: Mapped[int] = mapped_column(default=0)
     banned_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Only for role=ADMIN: superadmin | moderator | finance (NULL = superadmin)
+    admin_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     agreed_to_terms: Mapped[bool] = mapped_column(default=False)
     
     # Settings

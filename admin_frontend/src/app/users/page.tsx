@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Pagination from '@/components/Pagination';
+import { useMe } from '@/lib/useMe';
 
 const TX_LABEL: Record<string, string> = {
   TOPUP: 'Пополнение', CONTACT_FEE: 'Оплата отклика', REFUND: 'Возврат', REFERRAL_BONUS: 'Реферальный бонус',
@@ -32,6 +33,7 @@ export default function UsersPage() {
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [exporting, setExporting] = useState(false);
   const router = useRouter();
+  const { can } = useMe();
 
   const filterParams = useCallback(() => ({
     role: roleFilter !== 'ALL' ? roleFilter : undefined,
@@ -238,16 +240,16 @@ export default function UsersPage() {
                         Статус: {m.status}
                       </span>
                       <div className="flex flex-wrap gap-2">
-                        {m.status !== 'APPROVED' && (
+                        {can.moderate && m.status !== 'APPROVED' && (
                           <Btn color="green" onClick={() => patchMaster(m.master_id, { status: 'APPROVED' })}><CheckCircle className="w-4 h-4" />Одобрить</Btn>
                         )}
-                        {m.status !== 'REJECTED' && (
+                        {can.moderate && m.status !== 'REJECTED' && (
                           <Btn color="red" onClick={() => patchMaster(m.master_id, { status: 'REJECTED' }, `Заблокировать мастера ${selectedUser.full_name}?`)}><ShieldAlert className="w-4 h-4" />Бан</Btn>
                         )}
-                        <Btn color={m.is_accredited ? 'yellow' : 'gray'} onClick={() => patchMaster(m.master_id, { is_accredited: !m.is_accredited })}>
+                        {can.moderate && <Btn color={m.is_accredited ? 'yellow' : 'gray'} onClick={() => patchMaster(m.master_id, { is_accredited: !m.is_accredited })}>
                           <Medal className="w-4 h-4" />{m.is_accredited ? 'Аккредитован' : 'Выдать аккредитацию'}
-                        </Btn>
-                        <Btn color="gray" onClick={adjustPoints}><Wallet className="w-4 h-4" />Баллы</Btn>
+                        </Btn>}
+                        {can.finance && <Btn color="gray" onClick={adjustPoints}><Wallet className="w-4 h-4" />Баллы</Btn>}
                       </div>
                     </div>
                   </div>

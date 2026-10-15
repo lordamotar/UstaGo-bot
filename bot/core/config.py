@@ -33,6 +33,8 @@ class Config:
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
     # Comma-separated list of allowed origins for the admin panel, e.g. https://admin.example.com
     CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+    # Set to 1 when the API is behind nginx/Cloudflare: take the client IP from X-Forwarded-For
+    TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "0") == "1"
     # Business rules
     MAX_BIDS_PER_ORDER = int(os.getenv("MAX_BIDS_PER_ORDER", 5))
     ORDER_TTL_HOURS = int(os.getenv("ORDER_TTL_HOURS", 72))  # 0 disables auto-closing of stale orders

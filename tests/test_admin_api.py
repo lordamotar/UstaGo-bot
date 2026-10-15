@@ -302,3 +302,102 @@ async def test_csv_export_escapes_formulas_and_respects_filters(env):
     oid = await _order(env, client_id, description="export-marker-777")
     o = await env.client.get("/api/v1/orders/export", params={"q": "export-marker-777"})
     assert f"{oid};" in o.content.decode("utf-8-sig")
+
+
+# ---------------- roles / login protection ----------------
+
+async def _as_role(env, role):
+    """Swap the authenticated admin for one with the given admin_role."""
+    from admin_api import main as api
+    from database.models import User, UserRole
+    uid, _ = await _user(env, role=UserRole.ADMIN, admin_role=role)
+
+    async def fake():
+        async with env.maker() as s:
+            return await s.get(User, uid)
+    api.app.dependency_overrides[api.get_current_user] = fake
+    return uid
+
+
+async def test_moderator_can_moderate_but_not_touch_money_or_settings(env):
+    from database.models import MasterStatus
+    await _as_role(env, "moderator")
+    _, _, master_id = await _master(env, MasterStatus.PENDING)
+
+    ok = await env.client.patch(f"/api/v1/masters/{master_id}", json={"status": "APPROVED"})
+    assert ok.status_code == 200, ok.text
+    assert (await env.client.post(f"/api/v1/masters/{master_id}/adjust-points",
+                                  json={"amount": 10, "description": "x"})).status_code == 403
+    assert (await env.client.patch("/api/v1/settings", json={"free_orders_enabled": True})).status_code == 403
+    assert (await env.client.get("/api/v1/logs")).status_code == 403
+    assert (await env.client.get("/api/v1/backups")).status_code == 403
+    assert (await env.client.get("/api/v1/users")).status_code == 200  # read access is for every admin
+
+
+async def test_finance_can_move_points_but_not_moderate(env):
+    from database.models import MasterStatus
+    await _as_role(env, "finance")
+    uid, _, master_id = await _master(env, MasterStatus.APPROVED)
+
+    ok = await env.client.post(f"/api/v1/masters/{master_id}/adjust-points", json={"amount": 10, "description": "x"})
+    assert ok.status_code == 200, ok.text
+    assert await _points(env, uid) == 10
+    assert (await env.client.patch(f"/api/v1/masters/{master_id}", json={"status": "REJECTED"})).status_code == 403
+    client_id, _ = await _user(env)
+    oid = await _order(env, client_id)
+    assert (await env.client.post(f"/api/v1/orders/{oid}/cancel")).status_code == 403
+
+
+async def test_legacy_admin_without_role_is_superadmin(env):
+    # the default fixture admin has admin_role = NULL
+    assert (await env.client.get("/api/v1/auth/me")).json()["admin_role"] == "superadmin"
+    assert (await env.client.get("/api/v1/logs")).status_code == 200
+
+
+async def test_superadmin_manages_roles_with_guards(env):
+    from database.models import UserRole
+    target, _ = await _user(env, role=UserRole.ADMIN)
+    r = await env.client.patch(f"/api/v1/admins/{target}", json={"admin_role": "finance"})
+    assert r.status_code == 200, r.text
+    assert any(a["id"] == target and a["admin_role"] == "finance" for a in (await env.client.get("/api/v1/admins")).json())
+    assert (await env.client.patch(f"/api/v1/admins/{target}", json={"admin_role": "root"})).status_code == 400
+    assert (await env.client.patch(f"/api/v1/admins/{env.admin_id}", json={"admin_role": "finance"})).status_code == 400
+    plain, _ = await _user(env)
+    assert (await env.client.patch(f"/api/v1/admins/{plain}", json={"admin_role": "finance"})).status_code == 404
+
+
+async def _admin_with_password(env, password="correct-horse"):
+    from admin_api.main import get_password_hash
+    from database.models import UserRole
+    uid, tg = await _user(env, role=UserRole.ADMIN, username=f"adm_{next(_counter)}", hashed_password=get_password_hash(password))
+    from database.models import User
+    async with env.maker() as s:
+        return (await s.get(User, uid)).username, tg
+
+
+async def test_full_login_with_2fa_and_lockout(env, monkeypatch):
+    from admin_api import main as api
+    api.app.dependency_overrides.clear()
+    sent = []
+    async def fake_send(chat_id, text, **kw): sent.append(text)
+    monkeypatch.setattr(api.bot_instance, "send_message", fake_send)
+    username, _ = await _admin_with_password(env)
+
+    # wrong 2FA code does not give a token, right one does
+    r = await env.client.post("/api/v1/auth/login", data={"username": username, "password": "correct-horse"})
+    assert r.status_code == 200 and r.json()["requires_2fa"], r.text
+    import re
+    code = re.search(r"<code>(\d{6})</code>", sent[-1]).group(1)
+    wrong = "000000" if code != "000000" else "111111"
+    assert (await env.client.post("/api/v1/auth/verify-2fa", json={"username": username, "code": wrong})).status_code == 400
+    ok = await env.client.post("/api/v1/auth/verify-2fa", json={"username": username, "code": code})
+    assert ok.status_code == 200 and ok.json()["access_token"]
+    # the code is single-use
+    assert (await env.client.post("/api/v1/auth/verify-2fa", json={"username": username, "code": code})).status_code == 400
+
+    # five bad passwords lock this username from this IP, even the right password is refused afterwards
+    for _ in range(5):
+        bad = await env.client.post("/api/v1/auth/login", data={"username": username, "password": "nope"})
+        assert bad.status_code == 401
+    locked = await env.client.post("/api/v1/auth/login", data={"username": username, "password": "correct-horse"})
+    assert locked.status_code == 429 and int(locked.headers["retry-after"]) > 0

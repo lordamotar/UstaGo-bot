@@ -8,6 +8,7 @@ import { downloadCsv, fmtDate } from '@/lib/download';
 import { ArrowLeft, Search, ShoppingBag, MapPin, Calendar, DollarSign, AlertCircle, Download, Ban } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Pagination from '@/components/Pagination';
+import { useMe } from '@/lib/useMe';
 
 const STATUS_NAME: Record<string, string> = { NEW: 'Новый', ACTIVE: 'В работе', COMPLETED: 'Завершён', CANCELLED: 'Отменён' };
 const STATUS_COLOR: Record<string, string> = {
@@ -32,6 +33,7 @@ export default function OrdersPage() {
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [exporting, setExporting] = useState(false);
   const router = useRouter();
+  const { can } = useMe();
 
   useEffect(() => {
     api.get('/categories').then((r) => setCategories(r.data.items)).catch(() => {});
@@ -82,7 +84,7 @@ export default function OrdersPage() {
     finally { setExporting(false); }
   };
 
-  const canCancel = selectedOrder && ['NEW', 'ACTIVE'].includes(selectedOrder.status);
+  const canCancel = can.moderate && selectedOrder && ['NEW', 'ACTIVE'].includes(selectedOrder.status);
 
   return (
     <div className="min-h-screen bg-background p-6 lg:p-10">
