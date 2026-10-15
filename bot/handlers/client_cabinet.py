@@ -320,6 +320,15 @@ async def complete_order_handler(callback: CallbackQuery, state: FSMContext):
             await callback.answer("❌ Заказ не найден или уже завершен.")
             return
 
+        # Only the client who owns the order or the accepted master may complete it
+        _acc = next((b for b in order.bids if b.status == "accepted"), None)
+        _allowed = {order.client.telegram_id}
+        if _acc:
+            _allowed.add(_acc.master.user.telegram_id)
+        if callback.from_user.id not in _allowed:
+            await callback.answer("⛔ Это действие доступно только участникам заказа.", show_alert=True)
+            return
+
         # Mark order as completed
         order.status = OrderStatus.COMPLETED
         
@@ -391,35 +400,57 @@ async def client_confirm_cancel_order_callback(callback: CallbackQuery):
         order.status = OrderStatus.CANCELLED
         
         # Notify all masters who bid on this order
-        bidders = [(b.master.user.telegram_id, b.status) for b in order.bids]
+        bidders = [(b.master.user.telegram_id, b.status, b.master.user_id) for b in order.bids if b.status != "rejected"]
         
         await session.commit()
         
     await callback.message.edit_text(f"🗑️ Заказ №{order_id} успешно отменен.")
     
-    # Notify Master(s) and Refund Points
+    # Notify master(s) and refund exactly what they paid for this order (never more, never twice)
     from database.models import Transaction, TransactionType
-    for tid, status in bidders:
+    from sqlalchemy import or_, func
+    fee_desc = f"Отклик на заказ №{order_id}"
+    for tid, status, master_user_id in bidders:
         try:
-            # Return points (50 per bid)
+            refunded = 0
             async with async_session_maker() as session:
-                master_user = (await session.execute(select(User).where(User.telegram_id == tid))).scalar_one_or_none()
-                if master_user:
-                    master_user.points += 50
+                paid = (await session.execute(
+                    select(func.coalesce(func.sum(-Transaction.amount), 0)).where(
+                        Transaction.user_id == master_user_id,
+                        Transaction.type == TransactionType.CONTACT_FEE,
+                        or_(Transaction.order_id == order_id, Transaction.description == fee_desc),
+                    )
+                )).scalar() or 0
+                already = (await session.execute(
+                    select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                        Transaction.user_id == master_user_id,
+                        Transaction.type == TransactionType.REFUND,
+                        Transaction.order_id == order_id,
+                    )
+                )).scalar() or 0
+                to_refund = paid - already
+                if to_refund > 0:
+                    master_user = (await session.execute(
+                        select(User).where(User.id == master_user_id).with_for_update()
+                    )).scalar_one()
+                    master_user.points += to_refund
                     session.add(Transaction(
-                        user_id=master_user.id, 
-                        amount=50, 
+                        user_id=master_user_id,
+                        amount=to_refund,
                         type=TransactionType.REFUND,
+                        order_id=order_id,
                         description=f"Возврат баллов: заказ №{order_id} отменен клиентом"
                     ))
                     await session.commit()
+                    refunded = to_refund
 
             status_desc = "был в работе" if status == "accepted" else "был предложен"
+            refund_line = f"💰 <b>{refunded} баллов возвращены на ваш баланс.</b>\n\n" if refunded else "\n"
             await callback.bot.send_message(
                 tid,
                 f"🗑️ <b>Заявка №{order_id} была удалена клиентом.</b>\n"
                 f"Ваш отклик {status_desc}.\n"
-                "💰 <b>50 баллов возвращены на ваш баланс.</b>\n\n"
+                + refund_line +
                 "Вы по-прежнему можете откликаться на другие заказы!",
                 parse_mode="HTML"
             )
@@ -453,7 +484,7 @@ async def handle_review_comment(message: Message, state: FSMContext):
     data = await state.get_data()
     order_id = data['review_order_id']
     rating = data['rating']
-    comment = message.text
+    comment = message.text or ""
     
     from database.models import Review
     from sqlalchemy import func
@@ -465,10 +496,13 @@ async def handle_review_comment(message: Message, state: FSMContext):
         res = await session.execute(stmt)
         bid = res.scalar_one_or_none()
         
-        if bid:
-            # Need real user id of client
-            user_stmt = select(User).where(User.telegram_id == message.from_user.id)
-            user = (await session.execute(user_stmt)).scalar_one()
+        user = (await session.execute(select(User).where(User.telegram_id == message.from_user.id))).scalar_one()
+        order_obj = await session.get(Order, order_id)
+        already_reviewed = (await session.execute(
+            select(Review.id).where(Review.order_id == order_id, Review.from_user_id == user.id)
+        )).first()
+        # Only the order owner can review, and only once
+        if bid and order_obj and order_obj.client_id == user.id and not already_reviewed:
             
             # Save new review
             new_review = Review(

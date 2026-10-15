@@ -103,7 +103,7 @@ async def process_refill_receipt(message: Message, state: FSMContext):
             user_id=user.id,
             amount=amount,
             method=method,
-            receipt_photo=photo_id,
+            receipt_data=photo_id,
             status="PENDING"
         )
         session.add(new_request)

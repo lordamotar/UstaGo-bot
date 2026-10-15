@@ -17,7 +17,7 @@ class Config:
         DATABASE_URL = URL.create(
             drivername="postgresql+asyncpg",
             username=os.getenv("DB_USER", "UstaGo"),
-            password=os.getenv("DB_PASS", "nJ9f$Av!9SEf5Fu%9s%Xmt&Y6"),
+            password=os.getenv("DB_PASS", ""),
             host=os.getenv("DB_HOST", "localhost"),
             port=int(os.getenv("DB_PORT", 5432)),
             database=os.getenv("DB_NAME", "UstaGo_db")
@@ -29,5 +29,9 @@ class Config:
     ADMIN_IDS = [int(uid) for uid in os.getenv("ADMIN_IDS", "").split(",") if uid.strip()]
     ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
     SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+    # Secret for signing admin JWT tokens (min 32 chars). REQUIRED for admin_api.
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
+    # Comma-separated list of allowed origins for the admin panel, e.g. https://admin.example.com
+    CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
 config = Config()

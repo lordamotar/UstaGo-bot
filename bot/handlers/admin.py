@@ -707,8 +707,8 @@ async def list_topup_requests(callback: CallbackQuery):
             f"🔹 Метод: {req.method}\n"
             f"📅 Дата: {req.created_at.strftime('%d.%m.%Y %H:%M')}"
         )
-        if req.receipt_photo:
-            await callback.bot.send_photo(callback.from_user.id, req.receipt_photo, caption=text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
+        if req.receipt_data:
+            await callback.bot.send_photo(callback.from_user.id, req.receipt_data, caption=text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
         else:
             await callback.message.answer(text, reply_markup=get_topup_review_keyboard(req.id), parse_mode="HTML")
 
@@ -732,7 +732,7 @@ async def process_topup_review(callback: CallbackQuery):
             session.add(Transaction(
                 user_id=user.id,
                 amount=req.amount,
-                type=TransactionType.REFILL,
+                type=TransactionType.ADMIN_ADJUSTMENT,
                 description=f"Пополнение баланса через {req.method}"
             ))
             msg = f"✅ <b>Ваша заявка на пополнение одобрена!</b>\nНачислено <b>{req.amount}</b> баллов."

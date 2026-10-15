@@ -378,6 +378,25 @@ async def master_view_order_callback(callback: CallbackQuery):
     await callback.answer()
 
 # --- BIDDING FLOW ---
+BID_COST = 50
+
+async def _bid_block_reason(session, user, order_id: int):
+    """Returns a human-readable reason why this master cannot bid, or None if bidding is allowed."""
+    profile = user.master_profile if user else None
+    if not profile or profile.status != MasterStatus.APPROVED:
+        return "❌ Откликаться могут только мастера, прошедшие модерацию."
+    order = (await session.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order or order.status != OrderStatus.NEW:
+        return "⚠️ Заказ уже недоступен для откликов."
+    if order.client_id == user.id:
+        return "❌ Нельзя откликаться на собственный заказ."
+    duplicate = (await session.execute(
+        select(Bid.id).where(Bid.order_id == order_id, Bid.master_id == profile.id)
+    )).first()
+    if duplicate:
+        return "⚠️ Вы уже откликались на этот заказ."
+    return None
+
 @router.callback_query(F.data.startswith("start_bid:"))
 async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
     order_id = int(callback.data.split(":")[1])
@@ -385,9 +404,12 @@ async def start_bid_flow(callback: CallbackQuery, state: FSMContext):
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
         free_orders = settings.free_orders_enabled if settings else False
         
-        user = (await session.execute(select(User).where(User.telegram_id == callback.from_user.id))).scalar_one_or_none()
-        if not free_orders and (not user or user.points < 50):
-            await callback.answer("❌ Недостаточно баллов (нужно 50).", show_alert=True)
+        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == callback.from_user.id))).scalar_one_or_none()
+        reason = await _bid_block_reason(session, user, order_id)
+        if reason is None and not free_orders and user.points < BID_COST:
+            reason = f"❌ Недостаточно баллов (нужно {BID_COST})."
+        if reason:
+            await callback.answer(reason, show_alert=True)
             return
     await state.update_data(bid_order_id=order_id)
     await state.set_state(BidStates.entering_price)
@@ -408,11 +430,19 @@ async def process_bid_message(message: Message, state: FSMContext):
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
         free_orders = settings.free_orders_enabled if settings else False
         
-        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id))).scalar()
+        # Lock the user row so parallel bids cannot overdraw the balance
+        user = (await session.execute(select(User).options(selectinload(User.master_profile)).where(User.telegram_id == message.chat.id).with_for_update())).scalar()
+        reason = await _bid_block_reason(session, user, order_id)
+        if reason is None and not free_orders and user.points < BID_COST:
+            reason = f"❌ Недостаточно баллов (нужно {BID_COST})."
+        if reason:
+            await state.clear()
+            await message.answer(reason)
+            return
         
         if not free_orders:
-            user.points -= 50
-            session.add(Transaction(user_id=user.id, amount=-50, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}"))
+            user.points -= BID_COST
+            session.add(Transaction(user_id=user.id, amount=-BID_COST, type=TransactionType.CONTACT_FEE, description=f"Отклик на заказ №{order_id}", order_id=order_id))
         import re
         price_val = int("".join(re.findall(r'\d+', price_str))) if re.findall(r'\d+', price_str) else 0
         bid = Bid(order_id=order_id, master_id=user.master_profile.id, suggested_price=price_val, message=message.text)

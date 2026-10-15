@@ -17,6 +17,9 @@ import admin_api.backups as backup_util
 import asyncio
 import sentry_sdk
 import random
+import secrets
+import hmac
+import logging
 import time
 
 # --- SENTRY INITIALIZATION ---
@@ -44,10 +47,15 @@ async def log_action(session, action: str, details: str, admin_id: Optional[int]
     """Utility to log administrative actions."""
     session.add(AdminLog(action=action, details=details, admin_id=admin_id))
 
+_cors_origins = config.CORS_ORIGINS or ["*"]
+if _cors_origins == ["*"]:
+    logging.getLogger("admin_api").warning(
+        "CORS_ORIGINS is not set: allowing all origins. Set CORS_ORIGINS in .env for production."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=False,  # auth is a Bearer header, cookies are not used
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -77,7 +85,12 @@ async def scheduled_backups():
         await asyncio.sleep(60 * 60 * 24) # 24 hours
 
 # Security Configuration
-SECRET_KEY = getattr(config, "JWT_SECRET_KEY", "your-secret-key-change-it-in-env")
+SECRET_KEY = config.JWT_SECRET_KEY
+if not SECRET_KEY or len(SECRET_KEY) < 32:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not set or shorter than 32 chars. Generate one: "
+        "python -c \"import secrets; print(secrets.token_urlsafe(48))\" and put it into .env"
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
@@ -88,6 +101,23 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 # 2FA temporary code storage: {username: {"code": "123456", "expires": timestamp}}
 _2fa_codes: dict = {}
+
+# Brute-force protection for login (in-memory, per username)
+_login_failures: dict = {}
+MAX_LOGIN_FAILURES = 5
+LOGIN_LOCK_SECONDS = 15 * 60
+
+def _check_login_lock(username: str):
+    entry = _login_failures.get(username)
+    if entry and entry["count"] >= MAX_LOGIN_FAILURES:
+        if time.time() < entry["until"]:
+            raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+        _login_failures.pop(username, None)
+
+def _register_login_failure(username: str):
+    entry = _login_failures.setdefault(username, {"count": 0, "until": 0})
+    entry["count"] += 1
+    entry["until"] = time.time() + LOGIN_LOCK_SECONDS
 
 def verify_password(plain_password, hashed_password):
     if not hashed_password: return False
@@ -137,22 +167,15 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         stmt = select(User).where(User.username == form_data.username)
         user = (await session.execute(stmt)).scalar_one_or_none()
         
-        print(f"DEBUG LOGIN: Attempt for username='{form_data.username}'")
+        _check_login_lock(form_data.username)
         if not user:
-            print(f"DEBUG LOGIN: User '{form_data.username}' NOT FOUND")
+            _register_login_failure(form_data.username)
             raise HTTPException(status_code=401, detail="Incorrect username or password")
-        
-        # Печатаем длину, чтобы понять, нет ли лишних пробелов
-        received_pass = form_data.password
-        print(f"DEBUG LOGIN: Received password length: {len(received_pass)}")
-        # Печатаем первый и последний символ для верности (скрыто)
-        if len(received_pass) > 0:
-            print(f"DEBUG LOGIN: First char: '{received_pass[0]}', Last char: '{received_pass[-1]}'")
 
-        is_valid = verify_password(received_pass, user.hashed_password)
-        print(f"DEBUG LOGIN: Password verification result: {is_valid}")
+        is_valid = verify_password(form_data.password, user.hashed_password)
 
         if not is_valid:
+            _register_login_failure(form_data.username)
             raise HTTPException(
                 status_code=401,
                 detail="Incorrect username or password",
@@ -163,10 +186,11 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             raise HTTPException(status_code=403, detail="Not enough permissions")
         
         # Generate 2FA code and send to Telegram
-        code = str(random.randint(100000, 999999))
+        code = str(secrets.randbelow(900000) + 100000)
         _2fa_codes[user.username] = {
             "code": code,
-            "expires": time.time() + 300  # 5 minutes TTL
+            "expires": time.time() + 300,  # 5 minutes TTL
+            "attempts": 0
         }
         
         # Send code via Telegram
@@ -200,11 +224,16 @@ async def verify_2fa(data: TwoFAVerify):
         del _2fa_codes[data.username]
         raise HTTPException(status_code=400, detail="2FA code expired. Please login again.")
     
-    if stored["code"] != data.code:
+    if not hmac.compare_digest(stored["code"].encode(), data.code.encode()):
+        stored["attempts"] = stored.get("attempts", 0) + 1
+        if stored["attempts"] >= 5:
+            del _2fa_codes[data.username]
+            raise HTTPException(status_code=400, detail="Too many invalid codes. Please login again.")
         raise HTTPException(status_code=400, detail="Invalid 2FA code")
     
     # Code is valid — clean up and issue JWT
     del _2fa_codes[data.username]
+    _login_failures.pop(data.username, None)
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -371,13 +400,13 @@ async def get_orders_chart_data(
                 .join(Bid, Bid.order_id == Order.id)\
                 .join(MasterProfile, Bid.master_id == MasterProfile.id)\
                 .join(User, MasterProfile.user_id == User.id)\
-                .where(*where_clause, Bid.status == 'ACCEPTED')\
+                .where(*where_clause, Bid.status == 'accepted')\
                 .group_by(func.date(Order.created_at), User.full_name)
         else:
             # Default: split by 'Total' or apply master_id filter
             stmt = select(func.date(Order.created_at).label("day"), func.count(Order.id))
             if master_id:
-                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == 'ACCEPTED')
+                stmt = stmt.join(Bid).where(Bid.master_id == master_id, Bid.status == 'accepted')
             stmt = stmt.where(*where_clause).group_by(func.date(Order.created_at))
 
         results = (await session.execute(stmt)).all()
@@ -460,7 +489,7 @@ async def get_settings():
         return settings
 
 @app.patch("/api/v1/settings", dependencies=[Depends(verify_api_key)])
-async def update_settings(data: SystemSettingsUpdate):
+async def update_settings(data: SystemSettingsUpdate, current_user: User = Depends(get_current_user)):
     async with async_session_maker() as session:
         settings = (await session.execute(select(SystemSettings))).scalar_one_or_none()
         if not settings:
@@ -508,7 +537,7 @@ async def list_users(role: Optional[UserRole] = None, skip: int = 0, limit: int 
             master_data = None
             if u.master_profile:
                 total_bids = len(u.master_profile.bids)
-                accepted_bids = sum(1 for b in u.master_profile.bids if b.status == 'ACCEPTED')
+                accepted_bids = sum(1 for b in u.master_profile.bids if b.status == 'accepted')
                 
                 master_data = {
                     "master_id": u.master_profile.id,
@@ -591,7 +620,7 @@ async def get_master_details(master_id: int):
         }
 
 @app.patch("/api/v1/masters/{master_id}", dependencies=[Depends(verify_api_key)])
-async def update_master_status(master_id: int, data: MasterUpdate):
+async def update_master_status(master_id: int, data: MasterUpdate, current_user: User = Depends(get_current_user)):
     """Updates master status or accreditation."""
     async with async_session_maker() as session:
         master = (await session.get(MasterProfile, master_id))
@@ -603,11 +632,12 @@ async def update_master_status(master_id: int, data: MasterUpdate):
         if data.is_accredited is not None:
             master.is_accredited = data.is_accredited
             
+        await log_action(session, "UPDATE_MASTER", f"Master #{master_id}: {data.model_dump_json(exclude_none=True)}", admin_id=current_user.id)
         await session.commit()
         return {"status": "success", "master_id": master_id}
 
 @app.post("/api/v1/masters/{master_id}/adjust-points", dependencies=[Depends(verify_api_key)])
-async def adjust_master_points(master_id: int, data: PointAdjustment):
+async def adjust_master_points(master_id: int, data: PointAdjustment, current_user: User = Depends(get_current_user)):
     """Manually adjust master points (add/remove)."""
     async with async_session_maker() as session:
         # Get user linked to master
@@ -624,7 +654,7 @@ async def adjust_master_points(master_id: int, data: PointAdjustment):
             type=TransactionType.ADMIN_ADJUSTMENT,
             description=data.description
         ))
-        
+        await log_action(session, "ADJUST_POINTS", f"Master #{master_id}: {data.amount} ({data.description})", admin_id=current_user.id)
         await session.commit()
         return {"status": "success", "new_balance": user.points}
 
@@ -784,38 +814,48 @@ async def list_topup_requests(status: Optional[str] = "PENDING", skip: int = 0, 
         return {"total": total, "items": items}
 
 @app.patch("/api/v1/topups/{request_id}", dependencies=[Depends(verify_api_key)])
-async def review_topup(request_id: int, data: TopUpReview):
+async def review_topup(request_id: int, data: TopUpReview, current_user: User = Depends(get_current_user)):
+    if data.status not in ("APPROVED", "REJECTED"):
+        raise HTTPException(status_code=400, detail="status must be APPROVED or REJECTED")
     async with async_session_maker() as session:
-        req = await session.get(TopUpRequest, request_id)
+        # Lock the request row so two admins cannot approve the same top-up twice
+        req = (await session.execute(
+            select(TopUpRequest).where(TopUpRequest.id == request_id).with_for_update()
+        )).scalar_one_or_none()
         if not req or req.status != "PENDING":
             raise HTTPException(status_code=404, detail="Request not found or already processed")
-            
-        user = await session.get(User, req.user_id)
-        
+
+        user = (await session.execute(
+            select(User).where(User.id == req.user_id).with_for_update()
+        )).scalar_one()
+
         if data.status == "APPROVED":
             req.status = "APPROVED"
             user.points += req.amount
             session.add(Transaction(
                 user_id=user.id,
                 amount=req.amount,
-                type=TransactionType.REFUND, # Positive adjustment
+                type=TransactionType.ADMIN_ADJUSTMENT,  # TODO: dedicated TOPUP type (needs an Alembic enum migration)
                 description=f"Пополнение баланса через {req.method} (Admin API)"
             ))
-            # Notification
-            await notify_user(
-                user.telegram_id, 
-                f"✅ <b>Баланс пополнен!</b>\n\nСумма: <b>{req.amount} ₸</b>\nСпособ: {req.method}\nВаш текущий баланс: <b>{user.points} ₸</b>"
+            message = (
+                f"✅ <b>Баланс пополнен!</b>\n\nСумма: <b>{req.amount} ₸</b>\nСпособ: {req.method}\n"
+                f"Ваш текущий баланс: <b>{user.points} ₸</b>"
             )
         else:
             req.status = "REJECTED"
-            await notify_user(
-                user.telegram_id, 
-                f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\nЕсли у вас есть вопросы, обратитесь в поддержку."
+            message = (
+                f"❌ <b>Заявка на пополнение отклонена</b>\n\nСумма: {req.amount} ₸\n\n"
+                "Если у вас есть вопросы, обратитесь в поддержку."
             )
-            
+
         await log_action(session, f"TOPUP_{data.status}", f"Request #{request_id} reviewed. User: {user.full_name}, Amount: {req.amount}", admin_id=current_user.id)
+        telegram_id = user.telegram_id
         await session.commit()
-        return {"status": "success"}
+
+    # Notify only AFTER the data is safely committed
+    await notify_user(telegram_id, message)
+    return {"status": "success"}
 
 @app.get("/api/v1/transactions", dependencies=[Depends(verify_api_key)])
 async def list_transactions(skip: int = 0, limit: int = 50):
@@ -846,8 +886,11 @@ async def list_transactions(skip: int = 0, limit: int = 50):
         return {"total": total, "items": items}
 
 @app.post("/api/v1/finance/bulk-adjust-points", dependencies=[Depends(verify_api_key)])
-async def bulk_adjust_points(data: BulkPointAdjustment):
+async def bulk_adjust_points(data: BulkPointAdjustment, current_user: User = Depends(get_current_user)):
     """Adjust points for multiple masters or all of them."""
+    if data.amount == 0:
+        raise HTTPException(status_code=400, detail="Amount must not be zero")
+    notifications = []
     async with async_session_maker() as session:
         if data.all_masters:
             # Get all users who have a master profile
@@ -858,7 +901,7 @@ async def bulk_adjust_points(data: BulkPointAdjustment):
             users = (await session.execute(stmt)).scalars().all()
         else:
             raise HTTPException(status_code=400, detail="No masters specified")
-            
+
         for user in users:
             user.points += data.amount
             session.add(Transaction(
@@ -867,15 +910,20 @@ async def bulk_adjust_points(data: BulkPointAdjustment):
                 type=TransactionType.ADMIN_ADJUSTMENT,
                 description=data.description
             ))
-            # Notification
-            await notify_user(
+            notifications.append((
                 user.telegram_id,
-                f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\nВаш текущий баланс: <b>{user.points} ₸</b>"
-            )
-            
+                f"💰 <b>Начисление баллов</b>\n\nСумма: <b>{data.amount} ₸</b>\nОписание: {data.description}\n\n"
+                f"Ваш текущий баланс: <b>{user.points} ₸</b>"
+            ))
+
         await log_action(session, "BULK_ADJUST_POINTS", f"Amount: {data.amount}, Users: {len(users)}, Reason: {data.description}", admin_id=current_user.id)
         await session.commit()
-        return {"status": "success", "count": len(users)}
+
+    # Notify only after commit; small pause to respect Telegram rate limits
+    for tg_id, text in notifications:
+        await notify_user(tg_id, text)
+        await asyncio.sleep(0.05)
+    return {"status": "success", "count": len(notifications)}
 
 @app.get("/api/v1/logs", dependencies=[Depends(verify_api_key)])
 async def list_admin_logs(skip: int = 0, limit: int = 50):
