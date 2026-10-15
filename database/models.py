@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from sqlalchemy import BigInteger, String, ForeignKey, Enum as SqlEnum, DateTime, Integer, Float, Boolean, Table, Column, JSON, Text
+from sqlalchemy import BigInteger, String, ForeignKey, Enum as SqlEnum, DateTime, Integer, Float, Boolean, Table, Column, JSON, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database.base import Base
 
@@ -28,6 +28,7 @@ class TransactionType(enum.Enum):
     WITHDRAWAL = "WITHDRAWAL"
     ADMIN_ADJUSTMENT = "ADMIN_ADJUSTMENT"
     REFUND = "REFUND"
+    TOPUP = "TOPUP"
 
 # Association table for Master - Category subscriptions
 master_category_subscriptions = Table(
@@ -123,6 +124,7 @@ class MasterProfile(Base):
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (Index("ix_orders_status_category", "status", "category_id"),)
     
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
@@ -146,7 +148,7 @@ class Bid(Base):
     __tablename__ = "bids"
     
     id: Mapped[int] = mapped_column(primary_key=True)
-    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True)
     master_id: Mapped[int] = mapped_column(ForeignKey("master_profiles.id"))
     suggested_price: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50), default="pending")
@@ -195,7 +197,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
     
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     amount: Mapped[int] = mapped_column(Integer)
     type: Mapped[TransactionType] = mapped_column(SqlEnum(TransactionType))
     description: Mapped[Optional[str]] = mapped_column(String(255))
@@ -223,7 +225,7 @@ class TopUpRequest(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     amount: Mapped[int] = mapped_column(Integer)
     method: Mapped[str] = mapped_column(String(50)) # 'CRYPTO' or 'BANK'
-    status: Mapped[str] = mapped_column(String(20), default="PENDING") # PENDING, APPROVED, REJECTED
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True) # PENDING, APPROVED, REJECTED
     receipt_data: Mapped[Optional[str]] = mapped_column(Text) # Text or File ID
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     

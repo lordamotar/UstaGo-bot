@@ -17,6 +17,8 @@ depends_on = None
 
 
 def upgrade():
+    if 'admin_logs' in sa.inspect(op.get_bind()).get_table_names():
+        return  # already created (e.g. database built from the models)
     op.create_table(
         'admin_logs',
         sa.Column('id', sa.Integer(), nullable=False),

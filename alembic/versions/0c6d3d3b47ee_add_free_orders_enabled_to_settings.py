@@ -19,13 +19,33 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    # Add free_orders_enabled if it doesn't exist
-    op.add_column('system_settings', sa.Column('free_orders_enabled', sa.Boolean(), nullable=False, server_default=sa.text('false')))
-    
-    # Fix master_profiles.is_accredited nullability if needed
-    op.execute("ALTER TABLE master_profiles ALTER COLUMN is_accredited SET NOT NULL")
-    op.execute("ALTER TABLE master_profiles ALTER COLUMN is_accredited SET DEFAULT FALSE")
+    """Upgrade schema.
+
+    Idempotent: on a fresh database ``system_settings`` does not exist yet (no earlier migration creates it),
+    so it is created here instead of failing with "relation does not exist".
+    """
+    insp = sa.inspect(op.get_bind())
+    if 'system_settings' not in insp.get_table_names():
+        op.create_table(
+            'system_settings',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('crypto_enabled', sa.Boolean(), nullable=False, server_default=sa.text('false')),
+            sa.Column('crypto_address', sa.String(length=255), nullable=True),
+            sa.Column('bank_enabled', sa.Boolean(), nullable=False, server_default=sa.text('false')),
+            sa.Column('bank_details', sa.Text(), nullable=True),
+            sa.Column('free_orders_enabled', sa.Boolean(), nullable=False, server_default=sa.text('false')),
+            sa.PrimaryKeyConstraint('id'),
+        )
+    elif 'free_orders_enabled' not in {c['name'] for c in insp.get_columns('system_settings')}:
+        op.add_column('system_settings', sa.Column('free_orders_enabled', sa.Boolean(), nullable=False, server_default=sa.text('false')))
+
+    # master_profiles.is_accredited: add it if an older schema lacks it, otherwise just tighten it
+    if 'is_accredited' not in {c['name'] for c in insp.get_columns('master_profiles')}:
+        op.add_column('master_profiles', sa.Column('is_accredited', sa.Boolean(), nullable=False, server_default=sa.text('false')))
+    else:
+        op.execute("UPDATE master_profiles SET is_accredited = FALSE WHERE is_accredited IS NULL")
+        op.execute("ALTER TABLE master_profiles ALTER COLUMN is_accredited SET NOT NULL")
+        op.execute("ALTER TABLE master_profiles ALTER COLUMN is_accredited SET DEFAULT FALSE")
 
 
 def downgrade() -> None:
