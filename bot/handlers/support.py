@@ -220,14 +220,20 @@ async def process_admin_reply(message: Message, state: FSMContext):
         user_stmt = select(User).where(User.id == ticket.user_id)
         user = (await session.execute(user_stmt)).scalar_one()
         user_tid = user.telegram_id
-        
-        ticket.is_replied = True
-        await session.commit()
 
     try:
         await message.bot.send_message(user_tid, f"📨 <b>Ответ от администрации:</b>\n\n{esc(message.text)}", parse_mode="HTML")
-        await message.answer(f"✅ Ответ на обращение #{ticket_id} успешно доставлен.")
     except Exception as e:
-        await message.answer(f"❌ Ошибка отправки: {e}")
+        await message.answer(f"❌ Ошибка отправки (обращение осталось без ответа): {e}")
+        await state.clear()
+        return
+
+    async with async_session_maker() as session:
+        ticket = (await session.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))).scalar_one()
+        ticket.is_replied = True
+        ticket.admin_reply = message.text
+        ticket.replied_at = datetime.utcnow()
+        await session.commit()
+    await message.answer(f"✅ Ответ на обращение #{ticket_id} успешно доставлен.")
 
     await state.clear()

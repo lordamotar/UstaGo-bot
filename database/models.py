@@ -176,6 +176,8 @@ class SupportTicket(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     message: Mapped[str] = mapped_column(Text)
     is_replied: Mapped[bool] = mapped_column(default=False)
+    admin_reply: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    replied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     
     user: Mapped["User"] = relationship()

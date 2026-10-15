@@ -44,12 +44,12 @@ async def env(monkeypatch):
 
     api.app.dependency_overrides.clear()
     await client.aclose()
-    from database.models import AdminLog, Bid, MasterProfile, Order, TopUpRequest, Transaction
+    from database.models import AdminLog, Bid, MasterProfile, Order, SupportTicket, TopUpRequest, Transaction
     async with async_session_maker() as s:
         ids = (await s.execute(select(User.id).where(User.telegram_id >= TG_BASE, User.telegram_id < TG_BASE + 10_000))).scalars().all()
         order_ids = (await s.execute(select(Order.id).where(Order.client_id.in_(ids)))).scalars().all()
         await s.execute(delete(Bid).where(Bid.order_id.in_(order_ids)))
-        for model, col in ((AdminLog, AdminLog.admin_id), (Transaction, Transaction.user_id),
+        for model, col in ((AdminLog, AdminLog.admin_id), (Transaction, Transaction.user_id), (SupportTicket, SupportTicket.user_id),
                            (TopUpRequest, TopUpRequest.user_id), (MasterProfile, MasterProfile.user_id),
                            (Order, Order.client_id)):
             await s.execute(delete(model).where(col.in_(ids)))
@@ -401,3 +401,66 @@ async def test_full_login_with_2fa_and_lockout(env, monkeypatch):
         assert bad.status_code == 401
     locked = await env.client.post("/api/v1/auth/login", data={"username": username, "password": "correct-horse"})
     assert locked.status_code == 429 and int(locked.headers["retry-after"]) > 0
+
+
+# ---------------- support tickets / user counters ----------------
+
+async def _ticket(env, user_id, text="Не приходят уведомления"):
+    from database.models import SupportTicket
+    async with env.maker() as s:
+        t = SupportTicket(user_id=user_id, message=text)
+        s.add(t)
+        await s.commit()
+        return t.id
+
+
+async def test_ticket_list_filters_and_reply_flow(env):
+    uid, tg = await _user(env, name="Автор Тикета", username="ticket_author")
+    tid = await _ticket(env, uid, "Уникальный-текст-тикета")
+
+    r = (await env.client.get("/api/v1/support/tickets", params={"q": "Уникальный-текст"})).json()
+    assert [t["id"] for t in r["items"]] == [tid] and r["open_count"] >= 1
+    assert (await env.client.get("/api/v1/support/tickets", params={"q": "ticket_author", "status": "answered"})).json()["total"] == 0
+
+    env.notify.return_value = True
+    ok = await env.client.post(f"/api/v1/support/tickets/{tid}/reply", json={"text": "Проверили, <всё> починили"})
+    assert ok.status_code == 200, ok.text
+    assert env.notify.await_args.args[0] == tg
+    assert "&lt;всё&gt;" in env.notify.await_args.args[1]  # admin text is HTML-escaped
+    done = (await env.client.get("/api/v1/support/tickets", params={"q": "Уникальный-текст", "status": "answered"})).json()["items"][0]
+    assert done["is_replied"] and done["admin_reply"].startswith("Проверили") and done["replied_at"]
+
+
+async def test_ticket_stays_open_when_telegram_fails(env):
+    uid, _ = await _user(env)
+    tid = await _ticket(env, uid, "ticket-undeliverable-1")
+    env.notify.return_value = False
+    r = await env.client.post(f"/api/v1/support/tickets/{tid}/reply", json={"text": "ответ"})
+    assert r.status_code == 502
+    item = (await env.client.get("/api/v1/support/tickets", params={"q": "ticket-undeliverable-1"})).json()["items"][0]
+    assert item["is_replied"] is False and item["admin_reply"] is None
+
+
+async def test_ticket_reply_validation_and_roles(env):
+    uid, _ = await _user(env)
+    tid = await _ticket(env, uid)
+    assert (await env.client.post(f"/api/v1/support/tickets/{tid}/reply", json={"text": "   "})).status_code == 400
+    assert (await env.client.post("/api/v1/support/tickets/999999999/reply", json={"text": "x"})).status_code == 404
+    await _as_role(env, "finance")
+    assert (await env.client.post(f"/api/v1/support/tickets/{tid}/reply", json={"text": "x"})).status_code == 403
+    assert (await env.client.get("/api/v1/support/tickets")).status_code == 200
+
+
+async def test_user_counters_come_from_sql(env):
+    from database.models import MasterStatus
+    uid, _, master_id = await _master(env, MasterStatus.APPROVED)
+    client_id, _ = await _user(env)
+    o1, o2 = await _order(env, client_id), await _order(env, client_id)
+    await _bid(env, o1, master_id, "accepted")
+    await _bid(env, o2, master_id, "pending")
+
+    m = (await env.client.get(f"/api/v1/users/{uid}")).json()["master_data"]
+    assert (m["total_bids"], m["processed_orders"]) == (2, 1)
+    listed = {u["id"]: u for u in (await env.client.get("/api/v1/users", params={"q": "Test User"})).json()["items"]}
+    assert listed[client_id]["client_orders_count"] == 2
+    assert listed[uid]["master_data"]["total_bids"] == 2

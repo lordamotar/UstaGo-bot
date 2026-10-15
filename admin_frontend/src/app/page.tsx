@@ -15,6 +15,7 @@ import {
   CreditCard,
   MapPin,
   Settings,
+  LifeBuoy,
   History,
   Database
 } from 'lucide-react';
@@ -176,6 +177,16 @@ export default function DashboardPage() {
           >
             <ShoppingBag className="w-4 h-4" />
             Заказы
+          </button>
+          <button 
+            onClick={() => router.push('/support')}
+            className="relative flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
+          >
+            <LifeBuoy className="w-4 h-4" />
+            Поддержка
+            {stats.moderation.open_tickets > 0 && (
+              <span className="absolute -top-2 -right-2 min-w-5 h-5 px-1 rounded-full bg-orange-500 text-[11px] font-bold flex items-center justify-center">{stats.moderation.open_tickets}</span>
+            )}
           </button>
           {can.finance && (
           <button 

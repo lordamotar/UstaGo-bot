@@ -4,7 +4,7 @@ from admin_api.security import ROLE_SUPER, ROLE_MODERATOR, ROLE_FINANCE, ADMIN_R
 from sqlalchemy import select, func, update, or_, exists
 from sqlalchemy.orm import selectinload
 from database.engine import async_session_maker
-from database.models import User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings, AdminLog
+from database.models import SupportTicket, User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings, AdminLog
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,6 +21,7 @@ import io
 from statistics import median
 import admin_api.backups as backup_util
 from bot.services import billing
+from bot.utils.text import esc
 import asyncio
 import sentry_sdk
 import random
@@ -44,12 +45,14 @@ if config.SENTRY_DSN:
 app = FastAPI(title="UstaGo Admin API")
 bot_instance = Bot(token=config.BOT_TOKEN)
 
-async def notify_user(telegram_id: int, message: str):
-    """Sends a notification to the user via Telegram bot."""
+async def notify_user(telegram_id: int, message: str) -> bool:
+    """Sends a notification to the user via Telegram bot. Returns False if Telegram refused it."""
     try:
         await bot_instance.send_message(telegram_id, message, parse_mode="HTML")
+        return True
     except Exception as e:
-        print(f"Failed to notify user {telegram_id}: {e}")
+        logging.getLogger("admin_api").warning("Failed to notify user %s: %s", telegram_id, e)
+        return False
 
 async def log_action(session, action: str, details: str, admin_id: Optional[int] = None):
     """Utility to log administrative actions."""
@@ -326,6 +329,80 @@ async def set_admin_role(user_id: int, data: AdminRoleUpdate, current_user: User
     return {"status": "success", "admin_role": data.admin_role}
 
 
+# --- SUPPORT ---
+
+@app.get("/api/v1/support/tickets", dependencies=[Depends(verify_api_key)])
+async def list_support_tickets(status: str = "open", q: Optional[str] = None, skip: int = 0, limit: int = 50):
+    """status: open (not answered) | answered | all."""
+    limit = max(1, min(limit, 200))
+    conds = []
+    if status == "open":
+        conds.append(SupportTicket.is_replied.is_(False))
+    elif status == "answered":
+        conds.append(SupportTicket.is_replied.is_(True))
+    elif status != "all":
+        raise HTTPException(status_code=400, detail="status must be open, answered or all")
+    if q and q.strip():
+        like = f"%{q.strip().lstrip('@')}%"
+        conds.append(or_(SupportTicket.message.ilike(like),
+                         exists().where(User.id == SupportTicket.user_id,
+                                        or_(User.full_name.ilike(like), User.username.ilike(like), User.phone_number.ilike(like)))))
+    async with async_session_maker() as session:
+        total = (await session.execute(select(func.count(SupportTicket.id)).where(*conds))).scalar() or 0
+        open_count = (await session.execute(
+            select(func.count(SupportTicket.id)).where(SupportTicket.is_replied.is_(False)))).scalar() or 0
+        # unanswered first (oldest first = longest waiting), answered - newest first
+        order = (SupportTicket.created_at.asc(), SupportTicket.id.asc()) if status == "open" else (SupportTicket.created_at.desc(), SupportTicket.id.desc())
+        tickets = (await session.execute(
+            select(SupportTicket).options(selectinload(SupportTicket.user)).where(*conds).order_by(*order).offset(skip).limit(limit)
+        )).scalars().all()
+        return {"total": total, "open_count": open_count, "items": [{
+            "id": t.id,
+            "message": t.message,
+            "is_replied": t.is_replied,
+            "admin_reply": t.admin_reply,
+            "replied_at": t.replied_at,
+            "created_at": t.created_at,
+            "user": {"id": t.user.id, "name": t.user.full_name, "username": t.user.username,
+                     "phone": t.user.phone_number, "role": t.user.role},
+        } for t in tickets]}
+
+
+class TicketReply(BaseModel):
+    text: str
+
+
+@app.post("/api/v1/support/tickets/{ticket_id}/reply", dependencies=[Depends(MODERATION)])
+async def reply_support_ticket(ticket_id: int, data: TicketReply, current_user: User = Depends(get_current_user)):
+    text = data.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Ответ не может быть пустым")
+    if len(text) > 3500:
+        raise HTTPException(status_code=400, detail="Ответ слишком длинный (максимум 3500 символов)")
+
+    async with async_session_maker() as session:
+        ticket = (await session.execute(
+            select(SupportTicket).options(selectinload(SupportTicket.user)).where(SupportTicket.id == ticket_id)
+        )).scalar_one_or_none()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Обращение не найдено")
+        user_tid = ticket.user.telegram_id
+
+    # Mark as answered only if Telegram actually delivered the message
+    delivered = await notify_user(user_tid, f"📨 <b>Ответ от администрации:</b>\n\n{esc(text)}")
+    if not delivered:
+        raise HTTPException(status_code=502, detail="Telegram не доставил сообщение (пользователь мог заблокировать бота)")
+
+    async with async_session_maker() as session:
+        ticket = (await session.execute(select(SupportTicket).where(SupportTicket.id == ticket_id).with_for_update())).scalar_one()
+        ticket.is_replied = True
+        ticket.admin_reply = text
+        ticket.replied_at = datetime.utcnow()
+        await log_action(session, "SUPPORT_REPLY", f"Ticket #{ticket_id} answered", admin_id=current_user.id)
+        await session.commit()
+    return {"status": "success"}
+
+
 @app.get("/api/v1/health")
 async def health_check():
     return {"status": "ok"}
@@ -363,7 +440,10 @@ async def get_mini_stats():
                 "masters": total_masters
             },
             "moderation": {
-                "pending_masters": pending_masters
+                "pending_masters": pending_masters,
+                "open_tickets": (await session.execute(
+                    select(func.count(SupportTicket.id)).where(SupportTicket.is_replied.is_(False))
+                )).scalar() or 0,
             },
             "orders": {
                 "active": active_orders,
@@ -616,17 +696,16 @@ def _user_filters(role, q, master_status):
     return conds
 
 
-def _user_row(u: User) -> dict:
+def _user_row(u: User, orders_count: int = 0, total_bids: int = 0, accepted_bids: int = 0) -> dict:
     master_data = None
     if u.master_profile:
-        bids = u.master_profile.bids
         master_data = {
             "master_id": u.master_profile.id,
             "description": u.master_profile.description,
             "categories": [c.name for c in u.master_profile.categories],
             "districts": [d.name for d in u.master_profile.districts],
-            "total_bids": len(bids),
-            "processed_orders": sum(1 for b in bids if b.status == BidStatus.ACCEPTED),
+            "total_bids": total_bids,
+            "processed_orders": accepted_bids,
             "status": u.master_profile.status,
             "rating": u.master_profile.rating,
             "is_accredited": u.master_profile.is_accredited,
@@ -639,18 +718,22 @@ def _user_row(u: User) -> dict:
         "username": u.username,
         "phone": u.phone_number,
         "points": u.points,
-        "client_orders_count": len(u.orders_created),
+        "client_orders_count": orders_count,
         "master_data": master_data,
         "created_at": u.created_at,
     }
 
 
-_USER_LOAD = (
-    selectinload(User.master_profile).selectinload(MasterProfile.categories),
-    selectinload(User.master_profile).selectinload(MasterProfile.districts),
-    selectinload(User.master_profile).selectinload(MasterProfile.bids),
-    selectinload(User.orders_created),
-)
+def _users_select():
+    """SELECT user + counters computed by the database (no loading of every order / bid into memory)."""
+    orders_cnt = select(func.count(Order.id)).where(Order.client_id == User.id).correlate(User).scalar_subquery()
+    bids = select(func.count(Bid.id)).join(MasterProfile, MasterProfile.id == Bid.master_id).where(MasterProfile.user_id == User.id).correlate(User)
+    bids_cnt = bids.scalar_subquery()
+    accepted_cnt = bids.where(Bid.status == BidStatus.ACCEPTED).scalar_subquery()
+    return select(User, orders_cnt, bids_cnt, accepted_cnt).options(
+        selectinload(User.master_profile).selectinload(MasterProfile.categories),
+        selectinload(User.master_profile).selectinload(MasterProfile.districts),
+    )
 
 
 @app.get("/api/v1/users", dependencies=[Depends(verify_api_key)])
@@ -661,10 +744,10 @@ async def list_users(role: Optional[UserRole] = None, q: Optional[str] = None,
     conds = _user_filters(role, q, master_status)
     async with async_session_maker() as session:
         total = (await session.execute(select(func.count(User.id)).where(*conds))).scalar() or 0
-        stmt = (select(User).options(*_USER_LOAD).where(*conds)
+        stmt = (_users_select().where(*conds)
                 .order_by(User.created_at.desc(), User.id.desc()).offset(skip).limit(limit))
-        users = (await session.execute(stmt)).scalars().all()
-        return {"total": total, "items": [_user_row(u) for u in users]}
+        rows = (await session.execute(stmt)).all()
+        return {"total": total, "items": [_user_row(*r) for r in rows]}
 
 
 @app.get("/api/v1/users/export", dependencies=[Depends(verify_api_key)])
@@ -672,12 +755,10 @@ async def export_users(role: Optional[UserRole] = None, q: Optional[str] = None,
                        master_status: Optional[MasterStatus] = None):
     conds = _user_filters(role, q, master_status)
     async with async_session_maker() as session:
-        users = (await session.execute(
-            select(User).options(*_USER_LOAD).where(*conds).order_by(User.id).limit(EXPORT_LIMIT)
-        )).scalars().all()
+        found = (await session.execute(_users_select().where(*conds).order_by(User.id).limit(EXPORT_LIMIT))).all()
     rows = []
-    for u in users:
-        r = _user_row(u)
+    for found_row in found:
+        r = _user_row(*found_row)
         m = r["master_data"] or {}
         rows.append([r["id"], r["telegram_id"], _enum(r["role"]), r["full_name"], r["username"], r["phone"], r["points"],
                      r["client_orders_count"], _enum(m.get("status")), m.get("total_bids"), m.get("processed_orders"),
@@ -691,10 +772,11 @@ async def export_users(role: Optional[UserRole] = None, q: Optional[str] = None,
 async def get_user_details(user_id: int):
     """Full user card: profile, recent orders / bids and the points history."""
     async with async_session_maker() as session:
-        u = (await session.execute(select(User).options(*_USER_LOAD).where(User.id == user_id))).scalar_one_or_none()
-        if not u:
+        found = (await session.execute(_users_select().where(User.id == user_id))).first()
+        if not found:
             raise HTTPException(status_code=404, detail="User not found")
-        row = _user_row(u)
+        u = found[0]
+        row = _user_row(*found)
 
         txs = (await session.execute(
             select(Transaction).where(Transaction.user_id == u.id)
