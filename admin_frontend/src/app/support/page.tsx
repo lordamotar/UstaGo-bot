@@ -7,7 +7,7 @@ import { useDebounce } from '@/lib/useDebounce';
 import { fmtDate } from '@/lib/download';
 import { useMe } from '@/lib/useMe';
 import Pagination from '@/components/Pagination';
-import { ArrowLeft, Search, LifeBuoy, Send, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Search, LifeBuoy, Send, CheckCircle2, XCircle } from 'lucide-react';
 
 const TABS = [
   { id: 'open', label: 'Без ответа' },
@@ -28,6 +28,8 @@ export default function SupportPage() {
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [sending, setSending] = useState<number | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [confirmAll, setConfirmAll] = useState(false);
   const limit = 20;
 
   const load = useCallback(async () => {
@@ -57,11 +59,40 @@ export default function SupportPage() {
     } finally { setSending(null); }
   };
 
+  // закрыть без ответа: человеку уже ответили (например, прямо в Telegram)
+  const closeTickets = async (ids?: number[]) => {
+    try {
+      setClosing(true);
+      await api.post('/support/tickets/close', ids ? { ids } : {});
+      setConfirmAll(false);
+      await load();
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || 'Не удалось закрыть');
+    } finally { setClosing(false); }
+  };
+
   return (
     <div className="min-h-screen bg-background p-6 lg:p-10">
       <div className="flex items-center gap-4 mb-8">
         <button onClick={() => router.push('/')} className="p-2 hover:bg-secondary rounded-full transition-colors"><ArrowLeft className="w-6 h-6" /></button>
         <h1 className="text-3xl font-bold flex items-center gap-2"><LifeBuoy className="w-7 h-7 text-primary" />Поддержка</h1>
+        {can.moderate && openCount > 0 && (
+          <div className="ml-auto flex items-center gap-2">
+            {confirmAll ? (
+              <>
+                <span className="text-sm text-muted-foreground">Закрыть все ({openCount}) без ответа?</span>
+                <button onClick={() => closeTickets()} disabled={closing}
+                  className="px-3 py-2 bg-red-500/90 hover:bg-red-500 text-white text-sm font-bold rounded-xl disabled:opacity-50">{closing ? 'Закрываю…' : 'Да, закрыть'}</button>
+                <button onClick={() => setConfirmAll(false)} className="px-3 py-2 bg-secondary hover:bg-secondary/80 text-sm rounded-xl">Отмена</button>
+              </>
+            ) : (
+              <button onClick={() => setConfirmAll(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-sm font-medium rounded-xl transition-colors">
+                <XCircle className="w-4 h-4" />Закрыть все без ответа
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col md:flex-row gap-4 mb-8 items-center">
@@ -90,7 +121,9 @@ export default function SupportPage() {
                   {t.user.username ? `@${t.user.username} · ` : ''}{t.user.phone || 'телефон не указан'} · {fmtDate(t.created_at)}
                 </p>
               </div>
-              {t.is_replied && <span className="flex items-center gap-1 text-xs font-bold text-green-400"><CheckCircle2 className="w-4 h-4" />Отвечено {fmtDate(t.replied_at)}</span>}
+              {t.is_replied && (t.closed_without_reply
+                ? <span className="flex items-center gap-1 text-xs font-bold text-muted-foreground"><XCircle className="w-4 h-4" />Закрыто без ответа {fmtDate(t.replied_at)}</span>
+                : <span className="flex items-center gap-1 text-xs font-bold text-green-400"><CheckCircle2 className="w-4 h-4" />Отвечено {fmtDate(t.replied_at)}</span>)}
             </div>
             <p className="whitespace-pre-wrap bg-secondary/30 rounded-xl p-4 text-sm">{t.message}</p>
 
@@ -104,6 +137,10 @@ export default function SupportPage() {
                 <button onClick={() => reply(t.id)} disabled={sending === t.id || !(drafts[t.id] || '').trim()}
                   className="px-4 py-2.5 flex items-center gap-2 bg-primary hover:bg-primary/90 text-white font-bold rounded-xl disabled:opacity-50">
                   <Send className="w-4 h-4" />{sending === t.id ? 'Отправка…' : 'Ответить'}
+                </button>
+                <button onClick={() => closeTickets([t.id])} disabled={closing} title="Закрыть, ничего не отправляя пользователю"
+                  className="px-4 py-2.5 flex items-center gap-2 bg-secondary hover:bg-secondary/80 text-sm font-medium rounded-xl disabled:opacity-50">
+                  <XCircle className="w-4 h-4" />Закрыть
                 </button>
               </div>
             ) : <p className="text-xs text-muted-foreground mt-3">Отвечать могут суперадмин и модератор.</p>}

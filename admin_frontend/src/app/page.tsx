@@ -9,17 +9,11 @@ import {
   ShoppingBag, 
   TrendingUp, 
   Hourglass,
-  LogOut,
   BarChart3,
   CheckCircle2,
   CreditCard,
-  MapPin,
-  Settings,
-  LifeBuoy,
-  History,
-  Database
+  MapPin
 } from 'lucide-react';
-import ChangePasswordModal from '@/components/ChangePasswordModal';
 import FunnelCard from '@/components/FunnelCard';
 import { ROLE_LABEL, useMe } from '@/lib/useMe';
 import { 
@@ -56,9 +50,8 @@ export default function DashboardPage() {
 
   const [loading, setLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(false);
-  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const router = useRouter();
-  const { me, can } = useMe();
+  const { me } = useMe();
 
   const fetchChartData = async (range: string, view: string, custom?: { start: string, end: string }) => {
     try {
@@ -125,11 +118,6 @@ export default function DashboardPage() {
      }
   }, [chartRange, viewMode, selectedCategory, selectedDistrict, selectedMasterId]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('admin_token');
-    router.push('/login');
-  };
-
   if (loading || !stats) return (
     <div className="min-h-screen flex items-center justify-center bg-background">
       <div className="flex flex-col items-center gap-4">
@@ -163,97 +151,7 @@ export default function DashboardPage() {
           <h1 className="text-4xl font-extrabold tracking-tight">Панель управления</h1>
           <p className="text-muted-foreground mt-1">Добро пожаловать в центр управления UstaGo{me ? ` · ${ROLE_LABEL[me.admin_role]}` : ''}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3 mt-4 md:mt-0 self-start">
-          <button 
-            onClick={() => router.push('/users')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <Users className="w-4 h-4" />
-            Пользователи
-          </button>
-          <button 
-            onClick={() => router.push('/orders')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <ShoppingBag className="w-4 h-4" />
-            Заказы
-          </button>
-          <button 
-            onClick={() => router.push('/support')}
-            className="relative flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <LifeBuoy className="w-4 h-4" />
-            Поддержка
-            {stats.moderation.open_tickets > 0 && (
-              <span className="absolute -top-2 -right-2 min-w-5 h-5 px-1 rounded-full bg-orange-500 text-[11px] font-bold flex items-center justify-center">{stats.moderation.open_tickets}</span>
-            )}
-          </button>
-          {can.finance && (
-          <button 
-            onClick={() => router.push('/finances')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <CreditCard className="w-4 h-4" />
-            Финансы
-          </button>
-          )}
-          {can.superadmin && (
-          <button 
-            onClick={() => router.push('/directories')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <MapPin className="w-4 h-4" />
-            Справочники
-          </button>
-          )}
-          {can.superadmin && (
-          <button 
-            onClick={() => router.push('/logs')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <History className="w-4 h-4" />
-            Логи
-          </button>
-          )}
-          {can.superadmin && (
-          <button 
-            onClick={() => router.push('/backups')}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-          >
-            <Database className="w-4 h-4" />
-            Бэкапы
-          </button>
-          )}
-          {can.superadmin && (
-            <button 
-              onClick={() => router.push('/admins')}
-              className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
-            >
-              <Settings className="w-4 h-4" />
-              Админы
-            </button>
-          )}
-          <button 
-            onClick={() => setIsPasswordModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-xl transition-colors"
-          >
-            <Settings className="w-4 h-4" />
-            Пароль
-          </button>
-          <button 
-            onClick={handleLogout}
-            className="flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 rounded-xl transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-            Выйти
-          </button>
-        </div>
       </div>
-
-      <ChangePasswordModal 
-        isOpen={isPasswordModalOpen} 
-        onClose={() => setIsPasswordModalOpen(false)} 
-      />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">

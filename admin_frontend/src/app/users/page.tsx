@@ -30,6 +30,7 @@ export default function UsersPage() {
   const q = useDebounce(search);
   const [roleFilter, setRoleFilter] = useState('ALL');
   const [onlyPending, setOnlyPending] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState('ALL');
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [exporting, setExporting] = useState(false);
   const router = useRouter();
@@ -39,7 +40,8 @@ export default function UsersPage() {
     role: roleFilter !== 'ALL' ? roleFilter : undefined,
     q: q.trim() || undefined,
     master_status: onlyPending ? 'PENDING' : undefined,
-  }), [roleFilter, q, onlyPending]);
+    source: sourceFilter !== 'ALL' ? sourceFilter : undefined,
+  }), [roleFilter, q, onlyPending, sourceFilter]);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -55,7 +57,12 @@ export default function UsersPage() {
   }, [filterParams, skip, limit]);
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
-  useEffect(() => { setSkip(0); }, [roleFilter, q, onlyPending, limit]);
+  useEffect(() => { setSkip(0); }, [roleFilter, q, onlyPending, sourceFilter, limit]);
+  // переход со страницы «Источники»: /users?source=...
+  useEffect(() => {
+    const s = new URLSearchParams(window.location.search).get('source');
+    if (s) setSourceFilter(s);
+  }, []);
 
   const openCard = async (id: number) => {
     try {
@@ -130,6 +137,17 @@ export default function UsersPage() {
             className={`px-4 py-2 rounded-xl text-sm font-medium border transition-all ${onlyPending ? 'bg-orange-500/20 border-orange-500/40 text-orange-400' : 'bg-secondary/50 border-border hover:bg-background/50'}`}>
             Ожидают проверки
           </button>
+          <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}
+            className="px-3 py-2 rounded-xl text-sm bg-secondary/50 border border-border outline-none">
+            <option value="ALL">Все источники</option>
+            <option value="referral">Приглашения друзей</option>
+            <option value="direct">Напрямую</option>
+            <option value="other">Другая ссылка</option>
+            <option value="unknown">Неизвестно (до учёта)</option>
+            {!['ALL', 'referral', 'direct', 'other', 'unknown'].includes(sourceFilter) && (
+              <option value={sourceFilter}>{sourceFilter.startsWith('src:') ? `Кампания: ${sourceFilter.slice(4)}` : sourceFilter}</option>
+            )}
+          </select>
           <div className="flex bg-secondary/50 p-1 rounded-lg border border-border">
             {[10, 20, 50, 100].map((val) => (
               <button key={val} onClick={() => setLimit(val)}
@@ -146,7 +164,7 @@ export default function UsersPage() {
           <table className="w-full text-left">
             <thead className="bg-secondary/30 border-b border-border">
               <tr>
-                {['Пользователь', 'Роль', 'Контакты', 'Баллы', 'Мастер'].map((h) => (
+                {['Пользователь', 'Роль', 'Контакты', 'Источник', 'Баллы', 'Мастер'].map((h) => (
                   <th key={h} className="px-6 py-4 text-sm font-semibold text-muted-foreground">{h}</th>
                 ))}
                 <th className="px-6 py-4 text-sm font-semibold text-muted-foreground text-right">Действия</th>
@@ -176,6 +194,10 @@ export default function UsersPage() {
                     <td className="px-6 py-4 text-sm font-medium">
                       {u.phone || <span className="text-muted-foreground">-</span>}
                       {u.username && <p className="text-xs text-muted-foreground">@{u.username}</p>}
+                    </td>
+                    <td className="px-6 py-4 text-sm">
+                      {u.source_label}
+                      {u.referrer && <p className="text-xs text-muted-foreground">от {u.referrer.full_name || `ID ${u.referrer.id}`}</p>}
                     </td>
                     <td className="px-6 py-4 font-bold">{u.points}</td>
                     <td className="px-6 py-4">
@@ -227,6 +249,8 @@ export default function UsersPage() {
                   <Info label="Телефон" value={selectedUser.phone || 'Не указан'} icon={<Phone className="w-4 h-4 text-green-400" />} />
                   <Info label="Баллы" value={String(selectedUser.points)} icon={<Wallet className="w-4 h-4 text-primary" />} />
                   <Info label="Приглашено" value={String(selectedUser.referrals)} />
+                  <Info label="Источник" value={selectedUser.source_label} />
+                  <Info label="Пригласил" value={selectedUser.referrer ? (selectedUser.referrer.full_name || `ID ${selectedUser.referrer.id}`) : '—'} />
                 </div>
 
                 {m && (

@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, Body, Request
 from admin_api import security
 from admin_api.security import ROLE_SUPER, ROLE_MODERATOR, ROLE_FINANCE, ADMIN_ROLES, effective_role
-from sqlalchemy import select, func, update, or_, exists
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, func, update, or_, exists, case, literal
+from sqlalchemy.orm import selectinload, aliased
 from database.engine import async_session_maker
 from database.models import SupportTicket, User, MasterProfile, Order, OrderStatus, UserRole, MasterStatus, Category, District, Transaction, TransactionType, TopUpRequest, Bid, SystemSettings, AdminLog
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -22,6 +22,7 @@ from statistics import median
 import admin_api.backups as backup_util
 from bot.services import billing
 from bot.utils.text import esc
+from bot.utils.acquisition import normalize_tag, pretty_source, CAMPAIGN_PREFIX
 import asyncio
 from contextlib import asynccontextmanager
 import sentry_sdk
@@ -368,6 +369,7 @@ async def list_support_tickets(status: str = "open", q: Optional[str] = None, sk
             "message": t.message,
             "is_replied": t.is_replied,
             "admin_reply": t.admin_reply,
+            "closed_without_reply": bool(t.is_replied and not t.admin_reply),
             "replied_at": t.replied_at,
             "created_at": t.created_at,
             "user": {"id": t.user.id, "name": t.user.full_name, "username": t.user.username,
@@ -377,6 +379,32 @@ async def list_support_tickets(status: str = "open", q: Optional[str] = None, sk
 
 class TicketReply(BaseModel):
     text: str
+
+
+class TicketsClose(BaseModel):
+    ids: Optional[List[int]] = None   # None = every open ticket
+
+
+@app.post("/api/v1/support/tickets/close", dependencies=[Depends(MODERATION)])
+async def close_support_tickets(data: TicketsClose, current_user: User = Depends(get_current_user)):
+    """Closes tickets without a reply (the user was answered elsewhere, e.g. directly in Telegram).
+
+    Only open tickets are touched; a closed one has is_replied=True and no admin_reply."""
+    if data.ids is not None and len(data.ids) > 1000:
+        raise HTTPException(status_code=400, detail="Слишком много обращений за раз")
+    async with async_session_maker() as session:
+        conds = [SupportTicket.is_replied.is_(False)]
+        if data.ids is not None:
+            conds.append(SupportTicket.id.in_(data.ids))
+        ids = (await session.execute(select(SupportTicket.id).where(*conds).with_for_update())).scalars().all()
+        if ids:
+            await session.execute(
+                update(SupportTicket).where(SupportTicket.id.in_(ids)).values(is_replied=True, replied_at=datetime.utcnow())
+            )
+            await log_action(session, "SUPPORT_CLOSE", f"Closed without reply: {len(ids)} ticket(s) {sorted(ids)[:20]}",
+                             admin_id=current_user.id)
+        await session.commit()
+    return {"closed": len(ids)}
 
 
 @app.post("/api/v1/support/tickets/{ticket_id}/reply", dependencies=[Depends(MODERATION)])
@@ -534,6 +562,76 @@ async def get_funnel(days: int = 30):
     }
 
 
+@app.get("/api/v1/stats/acquisition", dependencies=[Depends(verify_api_key)])
+async def get_acquisition_stats(days: int = 30):
+    """Where new users came from: per source (referral / campaign links / direct) and the top inviters.
+
+    `days` limits the registrations considered; 0 = all time. Users who joined before tracking show up as 'unknown'."""
+    days = max(0, min(days, 3650))
+    conds = [User.created_at >= datetime.utcnow() - timedelta(days=days)] if days else []
+
+    is_master = exists().where(MasterProfile.user_id == User.id)
+    is_approved = exists().where(MasterProfile.user_id == User.id, MasterProfile.status == MasterStatus.APPROVED)
+    has_order = exists().where(Order.client_id == User.id)
+
+    def flag(cond):
+        return func.coalesce(func.sum(case((cond, 1), else_=0)), 0)
+
+    async with async_session_maker() as session:
+        src = func.coalesce(User.acquisition_source, literal("unknown"))
+        rows = (await session.execute(
+            select(src, func.count(User.id), flag(is_master), flag(is_approved), flag(has_order))
+            .where(*conds).group_by(src).order_by(func.count(User.id).desc())
+        )).all()
+
+        inv = (await session.execute(
+            select(User.referred_by, func.count(User.id), flag(is_master), flag(is_approved))
+            .where(User.referred_by.is_not(None), *conds)
+            .group_by(User.referred_by).order_by(func.count(User.id).desc(), User.referred_by).limit(20)
+        )).all()
+        names = {}
+        if inv:
+            people = (await session.execute(select(User).where(User.id.in_([r[0] for r in inv])))).scalars().all()
+            names = {p.id: p for p in people}
+
+    total = sum(r[1] for r in rows)
+
+    def pct(a, b):
+        return round(a * 100 / b, 1) if b else 0.0
+
+    return {
+        "days": days,
+        "total_new": total,
+        "sources": [{
+            "source": r[0], "label": pretty_source(None if r[0] == "unknown" else r[0]),
+            "users": r[1], "share": pct(r[1], total),
+            "masters": int(r[2]), "approved_masters": int(r[3]),
+            "with_orders": int(r[4]), "order_rate": pct(int(r[4]), r[1]),
+        } for r in rows],
+        "top_referrers": [{
+            "user_id": r[0],
+            "full_name": names[r[0]].full_name if r[0] in names else None,
+            "username": names[r[0]].username if r[0] in names else None,
+            "invited": r[1], "masters": int(r[2]), "approved_masters": int(r[3]),
+        } for r in inv],
+    }
+
+
+_bot_username_cache: dict = {}
+
+
+@app.get("/api/v1/stats/acquisition/link", dependencies=[Depends(verify_api_key)])
+async def make_campaign_link(tag: str):
+    """A trackable link for an ad / flyer / post: users who open it are counted under `src:<tag>`."""
+    clean = normalize_tag(tag)
+    if not clean:
+        raise HTTPException(status_code=400, detail="Метка должна содержать латинские буквы, цифры, _ или -")
+    if "name" not in _bot_username_cache:
+        _bot_username_cache["name"] = (await bot_instance.get_me()).username
+    return {"tag": clean, "source": CAMPAIGN_PREFIX + clean,
+            "link": f"https://t.me/{_bot_username_cache['name']}?start=src_{clean}"}
+
+
 @app.get("/api/v1/stats/orders-chart", dependencies=[Depends(verify_api_key)])
 async def get_orders_chart_data(
     days: Optional[int] = 7, 
@@ -682,7 +780,7 @@ async def update_settings(data: SystemSettingsUpdate, current_user: User = Depen
         await session.commit()
         return {"status": "success"}
 
-def _user_filters(role, q, master_status):
+def _user_filters(role, q, master_status, source=None):
     """WHERE-clauses shared by the users list and the CSV export."""
     conds = []
     if role:
@@ -700,10 +798,17 @@ def _user_filters(role, q, master_status):
         conds.append(or_(*parts))
     if master_status:
         conds.append(exists().where(MasterProfile.user_id == User.id, MasterProfile.status == master_status))
+    if source:
+        # 'unknown' = joined before source tracking; a campaign can be filtered by its bare tag as well
+        if source == "unknown":
+            conds.append(User.acquisition_source.is_(None))
+        else:
+            conds.append(User.acquisition_source.in_([source, CAMPAIGN_PREFIX + source]))
     return conds
 
 
-def _user_row(u: User, orders_count: int = 0, total_bids: int = 0, accepted_bids: int = 0) -> dict:
+def _user_row(u: User, orders_count: int = 0, total_bids: int = 0, accepted_bids: int = 0,
+              referrer_name: Optional[str] = None, referrer_username: Optional[str] = None) -> dict:
     master_data = None
     if u.master_profile:
         master_data = {
@@ -728,6 +833,11 @@ def _user_row(u: User, orders_count: int = 0, total_bids: int = 0, accepted_bids
         "client_orders_count": orders_count,
         "master_data": master_data,
         "created_at": u.created_at,
+        "source": u.acquisition_source,
+        "source_label": pretty_source(u.acquisition_source),
+        "start_payload": u.start_payload,
+        "referrer": ({"id": u.referred_by, "full_name": referrer_name, "username": referrer_username}
+                     if u.referred_by else None),
     }
 
 
@@ -737,7 +847,10 @@ def _users_select():
     bids = select(func.count(Bid.id)).join(MasterProfile, MasterProfile.id == Bid.master_id).where(MasterProfile.user_id == User.id).correlate(User)
     bids_cnt = bids.scalar_subquery()
     accepted_cnt = bids.where(Bid.status == BidStatus.ACCEPTED).scalar_subquery()
-    return select(User, orders_cnt, bids_cnt, accepted_cnt).options(
+    inviter = aliased(User)
+    return select(User, orders_cnt, bids_cnt, accepted_cnt, inviter.full_name, inviter.username).outerjoin(
+        inviter, inviter.id == User.referred_by
+    ).options(
         selectinload(User.master_profile).selectinload(MasterProfile.categories),
         selectinload(User.master_profile).selectinload(MasterProfile.districts),
     )
@@ -745,10 +858,11 @@ def _users_select():
 
 @app.get("/api/v1/users", dependencies=[Depends(verify_api_key)])
 async def list_users(role: Optional[UserRole] = None, q: Optional[str] = None,
-                     master_status: Optional[MasterStatus] = None, skip: int = 0, limit: int = 50):
+                     master_status: Optional[MasterStatus] = None, source: Optional[str] = None,
+                     skip: int = 0, limit: int = 50):
     """Users with stats; server-side search (name / @username / phone / id / telegram id) and filters."""
     limit = max(1, min(limit, 200))
-    conds = _user_filters(role, q, master_status)
+    conds = _user_filters(role, q, master_status, source)
     async with async_session_maker() as session:
         total = (await session.execute(select(func.count(User.id)).where(*conds))).scalar() or 0
         stmt = (_users_select().where(*conds)
@@ -759,8 +873,8 @@ async def list_users(role: Optional[UserRole] = None, q: Optional[str] = None,
 
 @app.get("/api/v1/users/export", dependencies=[Depends(verify_api_key)])
 async def export_users(role: Optional[UserRole] = None, q: Optional[str] = None,
-                       master_status: Optional[MasterStatus] = None):
-    conds = _user_filters(role, q, master_status)
+                       master_status: Optional[MasterStatus] = None, source: Optional[str] = None):
+    conds = _user_filters(role, q, master_status, source)
     async with async_session_maker() as session:
         found = (await session.execute(_users_select().where(*conds).order_by(User.id).limit(EXPORT_LIMIT))).all()
     rows = []
@@ -769,10 +883,12 @@ async def export_users(role: Optional[UserRole] = None, q: Optional[str] = None,
         m = r["master_data"] or {}
         rows.append([r["id"], r["telegram_id"], _enum(r["role"]), r["full_name"], r["username"], r["phone"], r["points"],
                      r["client_orders_count"], _enum(m.get("status")), m.get("total_bids"), m.get("processed_orders"),
-                     "; ".join(m.get("categories", [])), "; ".join(m.get("districts", [])), r["created_at"]])
+                     "; ".join(m.get("categories", [])), "; ".join(m.get("districts", [])), r["created_at"],
+                     r["source_label"], (r["referrer"] or {}).get("full_name")])
     return _csv_response("users.csv",
                          ["id", "telegram_id", "role", "name", "username", "phone", "points", "client_orders",
-                          "master_status", "bids", "accepted_bids", "categories", "districts", "created_at"], rows)
+                          "master_status", "bids", "accepted_bids", "categories", "districts", "created_at",
+                          "source", "invited_by"], rows)
 
 
 @app.get("/api/v1/users/{user_id}", dependencies=[Depends(verify_api_key)])
