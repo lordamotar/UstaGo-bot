@@ -369,6 +369,7 @@ async def list_support_tickets(status: str = "open", q: Optional[str] = None, sk
             "message": t.message,
             "is_replied": t.is_replied,
             "admin_reply": t.admin_reply,
+            "closed_without_reply": bool(t.is_replied and not t.admin_reply),
             "replied_at": t.replied_at,
             "created_at": t.created_at,
             "user": {"id": t.user.id, "name": t.user.full_name, "username": t.user.username,
@@ -378,6 +379,32 @@ async def list_support_tickets(status: str = "open", q: Optional[str] = None, sk
 
 class TicketReply(BaseModel):
     text: str
+
+
+class TicketsClose(BaseModel):
+    ids: Optional[List[int]] = None   # None = every open ticket
+
+
+@app.post("/api/v1/support/tickets/close", dependencies=[Depends(MODERATION)])
+async def close_support_tickets(data: TicketsClose, current_user: User = Depends(get_current_user)):
+    """Closes tickets without a reply (the user was answered elsewhere, e.g. directly in Telegram).
+
+    Only open tickets are touched; a closed one has is_replied=True and no admin_reply."""
+    if data.ids is not None and len(data.ids) > 1000:
+        raise HTTPException(status_code=400, detail="Слишком много обращений за раз")
+    async with async_session_maker() as session:
+        conds = [SupportTicket.is_replied.is_(False)]
+        if data.ids is not None:
+            conds.append(SupportTicket.id.in_(data.ids))
+        ids = (await session.execute(select(SupportTicket.id).where(*conds).with_for_update())).scalars().all()
+        if ids:
+            await session.execute(
+                update(SupportTicket).where(SupportTicket.id.in_(ids)).values(is_replied=True, replied_at=datetime.utcnow())
+            )
+            await log_action(session, "SUPPORT_CLOSE", f"Closed without reply: {len(ids)} ticket(s) {sorted(ids)[:20]}",
+                             admin_id=current_user.id)
+        await session.commit()
+    return {"closed": len(ids)}
 
 
 @app.post("/api/v1/support/tickets/{ticket_id}/reply", dependencies=[Depends(MODERATION)])

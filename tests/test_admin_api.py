@@ -548,3 +548,50 @@ async def test_campaign_link_generation(env, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"tag": "instagram", "source": "src:instagram", "link": "https://t.me/UstaGoBot?start=src_instagram"}
     assert (await env.client.get("/api/v1/stats/acquisition/link", params={"tag": "!!!"})).status_code == 400
+
+
+# ---------------- closing tickets without a reply ----------------
+
+async def test_close_selected_tickets_without_reply(env):
+    uid, _ = await _user(env)
+    t1, t2 = await _ticket(env, uid, "close-sel-1"), await _ticket(env, uid, "close-sel-2")
+    r = await env.client.post("/api/v1/support/tickets/close", json={"ids": [t1]})
+    assert r.json() == {"closed": 1}
+    env.notify.assert_not_awaited()                     # nothing is sent to the user
+
+    one = (await env.client.get("/api/v1/support/tickets", params={"q": "close-sel-1", "status": "answered"})).json()["items"][0]
+    assert one["is_replied"] and one["closed_without_reply"] and one["admin_reply"] is None and one["replied_at"]
+    two = (await env.client.get("/api/v1/support/tickets", params={"q": "close-sel-2"})).json()["items"][0]
+    assert two["is_replied"] is False and two["closed_without_reply"] is False
+
+    # closing the same ticket again changes nothing; unknown ids are ignored
+    assert (await env.client.post("/api/v1/support/tickets/close", json={"ids": [t1, 999999999]})).json() == {"closed": 0}
+
+
+async def test_close_all_open_tickets_and_keep_replied_ones(env):
+    uid, _ = await _user(env)
+    replied = await _ticket(env, uid, "close-all-replied")
+    env.notify.return_value = True
+    await env.client.post(f"/api/v1/support/tickets/{replied}/reply", json={"text": "готово"})
+    await _ticket(env, uid, "close-all-a")
+    await _ticket(env, uid, "close-all-b")
+
+    r = (await env.client.post("/api/v1/support/tickets/close", json={})).json()
+    assert r["closed"] >= 2
+    assert (await env.client.get("/api/v1/support/tickets")).json()["open_count"] == 0
+    kept = (await env.client.get("/api/v1/support/tickets", params={"q": "close-all-replied", "status": "answered"})).json()["items"][0]
+    assert kept["admin_reply"] == "готово" and kept["closed_without_reply"] is False
+
+
+async def test_closing_tickets_is_audited_and_needs_moderation_rights(env):
+    from database.models import AdminLog
+    from sqlalchemy import select
+    uid, _ = await _user(env)
+    tid = await _ticket(env, uid, "close-audit")
+    await env.client.post("/api/v1/support/tickets/close", json={"ids": [tid]})
+    async with env.maker() as s:
+        logs = (await s.execute(select(AdminLog).where(AdminLog.admin_id == env.admin_id, AdminLog.action == "SUPPORT_CLOSE"))).scalars().all()
+    assert len(logs) == 1 and str(tid) in logs[0].details
+
+    await _as_role(env, "finance")
+    assert (await env.client.post("/api/v1/support/tickets/close", json={"ids": [tid]})).status_code == 403
