@@ -17,7 +17,8 @@ import {
   Settings,
   LifeBuoy,
   History,
-  Database
+  Database,
+  Megaphone
 } from 'lucide-react';
 import ChangePasswordModal from '@/components/ChangePasswordModal';
 import FunnelCard from '@/components/FunnelCard';
@@ -187,6 +188,13 @@ export default function DashboardPage() {
             {stats.moderation.open_tickets > 0 && (
               <span className="absolute -top-2 -right-2 min-w-5 h-5 px-1 rounded-full bg-orange-500 text-[11px] font-bold flex items-center justify-center">{stats.moderation.open_tickets}</span>
             )}
+          </button>
+          <button 
+            onClick={() => router.push('/acquisition')}
+            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl transition-all shadow-lg shadow-primary/20"
+          >
+            <Megaphone className="w-4 h-4" />
+            Источники
           </button>
           {can.finance && (
           <button 

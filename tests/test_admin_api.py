@@ -464,3 +464,87 @@ async def test_user_counters_come_from_sql(env):
     listed = {u["id"]: u for u in (await env.client.get("/api/v1/users", params={"q": "Test User"})).json()["items"]}
     assert listed[client_id]["client_orders_count"] == 2
     assert listed[uid]["master_data"]["total_bids"] == 2
+
+
+# ---------------- acquisition (where users came from) ----------------
+
+async def test_acquisition_stats_group_by_source_and_rank_inviters(env):
+    import uuid
+    from database.models import MasterStatus
+    tag = "t" + uuid.uuid4().hex[:8]
+    src = f"src:{tag}"
+
+    inviter, _ = await _user(env, name="Inviter Ivan", username="inviter_ivan")
+    # two invited by a link, one of them became an approved master, another created an order
+    a_id, _, _ = await _master(env, MasterStatus.APPROVED, referred_by=inviter, acquisition_source="referral")
+    b_id, _ = await _user(env, referred_by=inviter, acquisition_source="referral")
+    await _order(env, b_id)
+    # three from a campaign, one of them a client with an order
+    c1, _ = await _user(env, acquisition_source=src)
+    await _user(env, acquisition_source=src)
+    await _user(env, acquisition_source=src)
+    await _order(env, c1)
+
+    r = (await env.client.get("/api/v1/stats/acquisition", params={"days": 1})).json()
+    by = {s["source"]: s for s in r["sources"]}
+    assert by[src]["users"] == 3 and by[src]["with_orders"] == 1 and by[src]["order_rate"] == 33.3
+    assert by[src]["label"] == f"Кампания: {tag}"
+    assert by["referral"]["users"] >= 2 and by["referral"]["approved_masters"] >= 1
+    assert abs(sum(s["share"] for s in r["sources"]) - 100) < 0.5
+    assert r["total_new"] == sum(s["users"] for s in r["sources"])
+
+    top = {t["user_id"]: t for t in r["top_referrers"]}
+    assert top[inviter]["invited"] == 2 and top[inviter]["approved_masters"] == 1
+    assert top[inviter]["full_name"] == "Inviter Ivan" and top[inviter]["username"] == "inviter_ivan"
+
+
+async def test_acquisition_unknown_source_and_time_window(env):
+    from datetime import datetime, timedelta
+    old, _ = await _user(env, created_at=datetime.utcnow() - timedelta(days=100))   # joined before tracking
+    recent = (await env.client.get("/api/v1/stats/acquisition", params={"days": 30})).json()
+    alltime = (await env.client.get("/api/v1/stats/acquisition", params={"days": 0})).json()
+    assert alltime["total_new"] >= recent["total_new"] + 1
+    unknown = {s["source"]: s for s in alltime["sources"]}["unknown"]
+    assert unknown["users"] >= 1 and "до учёта" in unknown["label"]
+    assert alltime["days"] == 0
+
+
+async def test_users_list_shows_source_and_inviter_and_filters_by_source(env):
+    import uuid
+    tag = "f" + uuid.uuid4().hex[:8]
+    inviter, _ = await _user(env, name="Пригласивший Пётр", username="petr_inv")
+    invited, _ = await _user(env, name="Guest One", referred_by=inviter, acquisition_source="referral", start_payload="ref_1")
+    camp, _ = await _user(env, name="Guest Two", acquisition_source=f"src:{tag}")
+
+    # by exact source and by the bare campaign tag
+    for flt in (f"src:{tag}", tag):
+        items = (await env.client.get("/api/v1/users", params={"source": flt})).json()["items"]
+        assert [u["id"] for u in items] == [camp]
+    items = (await env.client.get("/api/v1/users", params={"source": "referral", "q": "Guest One"})).json()["items"]
+    assert items[0]["source"] == "referral" and items[0]["source_label"] == "Приглашение друга"
+    assert items[0]["referrer"] == {"id": inviter, "full_name": "Пригласивший Пётр", "username": "petr_inv"}
+    assert camp not in [u["id"] for u in (await env.client.get("/api/v1/users", params={"source": "referral"})).json()["items"]]
+
+    card = (await env.client.get(f"/api/v1/users/{invited}")).json()
+    assert card["referrer"]["full_name"] == "Пригласивший Пётр" and card["start_payload"] == "ref_1"
+    assert (await env.client.get(f"/api/v1/users/{inviter}")).json()["referrals"] == 1
+
+    csv_body = (await env.client.get("/api/v1/users/export", params={"source": f"src:{tag}"})).content.decode("utf-8-sig")
+    assert "invited_by" in csv_body.splitlines()[0] and f"Кампания: {tag}" in csv_body and csv_body.count("\n") == 2
+
+
+async def test_unknown_source_filter_finds_users_without_a_source(env):
+    uid, _ = await _user(env, name="Legacy Lev")
+    items = (await env.client.get("/api/v1/users", params={"source": "unknown", "q": "Legacy Lev"})).json()["items"]
+    assert [u["id"] for u in items] == [uid] and items[0]["source"] is None and items[0]["referrer"] is None
+
+
+async def test_campaign_link_generation(env, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    from admin_api import main as api
+    monkeypatch.setattr(api, "_bot_username_cache", {})
+    monkeypatch.setattr(api.bot_instance, "get_me", AsyncMock(return_value=MagicMock(username="UstaGoBot")))
+    r = await env.client.get("/api/v1/stats/acquisition/link", params={"tag": " Insta Gram! "})
+    assert r.status_code == 200
+    assert r.json() == {"tag": "instagram", "source": "src:instagram", "link": "https://t.me/UstaGoBot?start=src_instagram"}
+    assert (await env.client.get("/api/v1/stats/acquisition/link", params={"tag": "!!!"})).status_code == 400

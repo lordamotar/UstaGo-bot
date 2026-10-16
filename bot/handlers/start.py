@@ -7,6 +7,7 @@ from bot.states import RegistrationStates
 from sqlalchemy import select
 from database.engine import async_session_maker
 from database.models import User, UserRole
+from bot.utils.acquisition import parse_start_payload, source_label, SOURCE_REFERRAL
 
 router = Router()
 
@@ -17,14 +18,10 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
     """Handles the /start command."""
     await state.clear()
     
-    # Referral tracking
-    ref_id = None
+    # Where the user came from: referral link (ref_<id>), campaign link (src_<tag>) or nothing
     args = command.args if command else None
-    if args and args.startswith("ref_"):
-        try:
-            ref_id = int(args.split("_")[1])
-        except (IndexError, ValueError):
-            pass
+    kind, value = parse_start_payload(args)
+    ref_id = int(value) if kind == "referral" else None
 
     async with async_session_maker() as session:
         stmt = select(User).where(User.telegram_id == message.from_user.id)
@@ -42,7 +39,9 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
                 telegram_id=message.from_user.id,
                 full_name=message.from_user.full_name,
                 username=message.from_user.username,
-                referred_by=inviter_id
+                referred_by=inviter_id,
+                acquisition_source=source_label(kind, value, inviter_found=bool(inviter_id)),
+                start_payload=(args or None) and args[:128],
             )
             session.add(user)
             await session.commit()
@@ -54,6 +53,10 @@ async def cmd_start(message: Message, state: FSMContext, command: CommandObject 
                 inviter_id = (await session.execute(inv_stmt)).scalar()
                 if inviter_id:
                     user.referred_by = inviter_id
+                    # the invitation earns the inviter a bonus, so the user is counted as invited
+                    user.acquisition_source = SOURCE_REFERRAL
+                    if not user.start_payload:
+                        user.start_payload = (args or None) and args[:128]
                     await session.commit()
                     print(f"DEBUG: Referrer {inviter_id} added to existing user {message.from_user.id}")
 

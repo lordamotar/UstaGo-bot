@@ -72,6 +72,10 @@ class User(Base):
     # Only for role=ADMIN: superadmin | moderator | finance (NULL = superadmin)
     admin_role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     agreed_to_terms: Mapped[bool] = mapped_column(default=False)
+
+    # Where the user came from (first touch): direct | referral | src:<campaign tag> | other; NULL = joined before tracking
+    acquisition_source: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    start_payload: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     
     # Settings
     notifications_enabled: Mapped[bool] = mapped_column(default=True)
