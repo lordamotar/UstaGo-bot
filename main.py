@@ -106,6 +106,16 @@ async def order_expiry_worker(bot: Bot):
             logger.exception("Error in order_expiry_worker")
         await asyncio.sleep(30 * 60)  # every 30 minutes
 
+async def order_reminder_worker(bot: Bot):
+    """Asks clients whether to re-notify masters about orders without bids and sends the reminders (working hours only)."""
+    from bot.services.reminders import run_reminder_cycle
+    while True:
+        try:
+            await run_reminder_cycle(bot, async_session_maker)
+        except Exception:
+            logger.exception("Error in order_reminder_worker")
+        await asyncio.sleep(60)
+
 async def build_storage():
     """FSM storage: Redis when available (state survives restarts), otherwise in-memory with a warning."""
     try:
@@ -148,6 +158,7 @@ async def main():
     background_tasks = [  # keep references so tasks are not garbage-collected
         asyncio.create_task(unban_worker(bot)),
         asyncio.create_task(order_expiry_worker(bot)),
+        asyncio.create_task(order_reminder_worker(bot)),
     ]
 
     # Start polling

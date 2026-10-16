@@ -151,12 +151,27 @@ class Order(Base):
     photo_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    
+
+    # Re-notification of masters when nobody bids: the client is asked once, then the chosen mode is executed
+    # (in working hours). remind_mode: NULL = not chosen yet | all | unopened | skip
+    reminder_prompted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    remind_mode: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     client: Mapped["User"] = relationship(back_populates="orders_created")
     category: Mapped["Category"] = relationship(back_populates="orders")
     district: Mapped[Optional["District"]] = relationship(back_populates="orders")
     bids: Mapped[List["Bid"]] = relationship(back_populates="order")
     review: Mapped[Optional["Review"]] = relationship(back_populates="order", uselist=False)
+
+class OrderView(Base):
+    """A master opened the order card (used to re-notify only those who have not looked at it yet)."""
+    __tablename__ = "order_views"
+
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    viewed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
 
 class Bid(Base):
     __tablename__ = "bids"

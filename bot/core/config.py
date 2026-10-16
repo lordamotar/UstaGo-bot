@@ -38,6 +38,10 @@ class Config:
     # Business rules
     MAX_BIDS_PER_ORDER = int(os.getenv("MAX_BIDS_PER_ORDER", 5))
     ORDER_TTL_HOURS = int(os.getenv("ORDER_TTL_HOURS", 72))  # 0 disables auto-closing of stale orders
+    # Re-notify masters when an order has no bids: ask the client after N minutes, send only in working hours
+    REMINDER_AFTER_MINUTES = int(os.getenv("REMINDER_AFTER_MINUTES", 15))  # 0 disables the feature
+    WORK_HOURS_START = int(os.getenv("WORK_HOURS_START", 9))   # local time (TZ_OFFSET_HOURS), inclusive
+    WORK_HOURS_END = int(os.getenv("WORK_HOURS_END", 21))      # local time, exclusive
     TZ_OFFSET_HOURS = int(os.getenv("TZ_OFFSET_HOURS", 5))  # local time for "do not disturb" (Kazakhstan: UTC+5)
 
 config = Config()
