@@ -185,36 +185,12 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         dist = await session.get(District, data['district_id'])
         
         # Notify Masters
-        from sqlalchemy import or_, exists
-        from database.models import master_district_areas
-        
-        master_stmt = select(User).join(User.master_profile).join(MasterProfile.categories).where(
-            User.role == UserRole.MASTER,
-            User.notifications_enabled == True,
-            User.visible_for_new_orders == True, 
-            Category.id == data['category_id']
-        )
-        
-        has_no_districts = ~exists().where(master_district_areas.c.master_profile_id == MasterProfile.id)
-        works_in_district = exists().where(
-            (master_district_areas.c.master_profile_id == MasterProfile.id) & 
-            (master_district_areas.c.district_id == data['district_id'])
-        )
-        master_stmt = master_stmt.where(or_(works_in_district, has_no_districts))
-        
-        res = await session.execute(master_stmt)
-        masters_to_notify = res.scalars().all()
-        
+        from bot.services.reminders import find_masters_for_order, is_in_dnd
+        masters_to_notify = await find_masters_for_order(session, data['category_id'], data['district_id'])
+
         from datetime import datetime
         from datetime import timezone, timedelta
         now_str = datetime.now(timezone(timedelta(hours=config.TZ_OFFSET_HOURS))).strftime("%H:%M")
-        
-        def is_in_dnd(now_s, start_s, end_s):
-            if not start_s or not end_s: return False
-            if start_s == end_s: return False
-            if start_s < end_s:
-                return start_s <= now_s < end_s
-            return now_s >= start_s or now_s < end_s
 
         has_photos = len(data.get("order_photos", [])) > 0
         photo_mark = "\n🖼 <b>Есть фото</b>" if has_photos else ""
@@ -249,4 +225,41 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     from bot.keyboards.client import get_client_main_menu
     is_admin = callback.from_user.id in config.ADMIN_IDS
     await callback.message.answer("Вы в главном меню.", reply_markup=get_client_main_menu(is_admin=is_admin))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("order_remind:"))
+async def order_remind_choice(callback: CallbackQuery):
+    """Client's answer to «no bids yet — remind the masters?»."""
+    from bot.services import reminders
+    try:
+        _, order_id, mode = callback.data.split(":")
+        order_id = int(order_id)
+    except ValueError:
+        await callback.answer()
+        return
+
+    async with async_session_maker() as session:
+        result = await reminders.set_client_choice(session, order_id, callback.from_user.id, mode)
+        await session.commit()
+
+    if result == "ok":
+        if mode == reminders.MODE_SKIP:
+            text = f"Хорошо, по заявке №{order_id} ничего не отправляю."
+        else:
+            who = "всем мастерам категории" if mode == reminders.MODE_ALL else "мастерам, которые ещё не открывали заказ"
+            when = "Отправляю сейчас." if reminders.in_working_hours() else (
+                f"Отправлю в рабочее время ({config.WORK_HOURS_START:02d}:00–{config.WORK_HOURS_END:02d}:00)."
+            )
+            text = f"🔔 Напомню {who}. {when}"
+    else:
+        text = {
+            "closed": "Заявка уже закрыта.",
+            "has_bids": "По заявке уже появились отклики — напоминание не нужно. 🎉",
+            "already": "Вы уже ответили на этот вопрос.",
+        }.get(result, "Заявка не найдена.")
+    try:
+        await callback.message.edit_text(text)
+    except Exception:
+        await callback.message.answer(text)
     await callback.answer()

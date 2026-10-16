@@ -351,6 +351,13 @@ async def master_view_order_callback(callback: CallbackQuery):
     async with async_session_maker() as session:
         stmt = select(Order).options(selectinload(Order.category), selectinload(Order.district)).where(Order.id == order_id)
         order = (await session.execute(stmt)).scalar_one_or_none()
+        if order:
+            # remember that this master looked at the order (used by "remind only those who have not opened it")
+            from bot.services.reminders import record_view
+            viewer = (await session.execute(select(User.id).where(User.telegram_id == callback.from_user.id))).scalar_one_or_none()
+            if viewer:
+                await record_view(session, order.id, viewer)
+                await session.commit()
         
     if not order:
         await callback.answer("Заказ не найден.")
