@@ -54,6 +54,9 @@ async def place_bid(
         select(User).options(selectinload(User.master_profile))
         .where(User.telegram_id == telegram_id).with_for_update()
     )).scalar_one_or_none()
+    # Serialize bidders of the same order: otherwise two masters can both see "one free slot" and both win
+    # (MAX_BIDS_PER_ORDER exceeded). Lock order is always user -> order.
+    await session.execute(select(Order.id).where(Order.id == order_id).with_for_update())
     reason = await bid_block_reason(session, user, order_id)
     if reason:
         return BidResult(error=reason)

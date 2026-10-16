@@ -137,7 +137,7 @@ async def process_support_msg(message: Message, state: FSMContext):
     admin_text = (
         f"📩 <b>Новое обращение #{ticket_id}</b>\n"
         f"👤 От пользователя: <code>#{user.id}</code>\n\n"
-        f"💬 Текст: {msg_text}"
+        f"💬 Текст: {esc(msg_text)}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✍️ Ответить (разово)", callback_data=f"admin_reply:{ticket_id}")],

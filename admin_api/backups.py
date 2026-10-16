@@ -86,17 +86,28 @@ def list_backups():
     # Sort by date desc
     return sorted(files, key=lambda x: x["created_at"], reverse=True)
 
+def _safe_backup_path(filename: str):
+    """Absolute path of an existing file that lives DIRECTLY inside BACKUP_DIR, else None.
+
+    Rejects absolute paths ("/etc/passwd", "C:\\x"), "..", separators and look-alike directories
+    such as "<BACKUP_DIR>_evil" (a plain startswith() would accept those)."""
+    if not filename or filename != os.path.basename(filename) or filename in (".", ".."):
+        return None
+    base = os.path.abspath(BACKUP_DIR)
+    path = os.path.abspath(os.path.join(base, filename))
+    if os.path.dirname(path) != base or not os.path.isfile(path):
+        return None
+    return path
+
+
 def delete_backup(filename: str):
     """Deletes a specific backup file."""
-    path = os.path.join(BACKUP_DIR, filename)
-    if os.path.exists(path) and ".." not in filename:
+    path = _safe_backup_path(filename)
+    if path:
         os.remove(path)
         return True
     return False
 
 def get_backup_path(filename: str):
     """Returns absolute path to a backup file for download."""
-    path = os.path.abspath(os.path.join(BACKUP_DIR, filename))
-    if os.path.exists(path) and path.startswith(os.path.abspath(BACKUP_DIR)):
-        return path
-    return None
+    return _safe_backup_path(filename)

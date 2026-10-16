@@ -83,26 +83,30 @@ async def show_my_orders(message: Message):
 @router.callback_query(F.data.startswith("client_view_order:"))
 async def client_view_order_callback(callback: CallbackQuery):
     order_id = int(callback.data.split(":")[1])
-    await process_view_order(callback.message, order_id)
+    await process_view_order(callback.message, order_id, callback.from_user.id)
     await callback.answer()
 
 @router.message(F.text.startswith("/view_order_"))
 async def view_order_bids_msg(message: Message):
     try:
         order_id = int(message.text.split("_")[-1])
-        await process_view_order(message, order_id)
+        await process_view_order(message, order_id, message.from_user.id)
     except: pass
 
-async def process_view_order(message: Message, order_id: int):
+async def process_view_order(message: Message, order_id: int, viewer_telegram_id: int):
+    """Shows an order with its bids. `viewer_telegram_id` is the real user (NOT message.from_user: for a
+    callback `message` is the bot's own message). Only the order's owner may look at it."""
     async with async_session_maker() as session:
         stmt = select(Order).options(
-            selectinload(Order.bids).joinedload(Bid.master).joinedload(MasterProfile.user)
+            selectinload(Order.bids).joinedload(Bid.master).joinedload(MasterProfile.user),
+            selectinload(Order.client),
         ).where(Order.id == order_id)
         
         res = await session.execute(stmt)
         order = res.scalar_one_or_none()
         
-    if not order:
+    # same answer for "does not exist" and "not yours": do not reveal which order ids exist
+    if not order or order.client.telegram_id != viewer_telegram_id:
         await message.answer("❌ Заявка не найдена.")
         return
         
@@ -157,8 +161,14 @@ async def process_view_order(message: Message, order_id: int):
 async def client_reject_bid_callback(callback: CallbackQuery):
     bid_id = int(callback.data.split(":")[1])
     async with async_session_maker() as session:
-        stmt = select(Bid).options(joinedload(Bid.master).joinedload(MasterProfile.user)).where(Bid.id == bid_id)
+        stmt = select(Bid).options(
+            joinedload(Bid.master).joinedload(MasterProfile.user),
+            joinedload(Bid.order).joinedload(Order.client),
+        ).where(Bid.id == bid_id)
         bid = (await session.execute(stmt)).scalar_one_or_none()
+        if bid and bid.order.client.telegram_id != callback.from_user.id:
+            await callback.answer("⛔ Это не ваша заявка.", show_alert=True)
+            return
         if bid:
             bid.status = BidStatus.REJECTED
             master_tid = bid.master.user.telegram_id
@@ -233,17 +243,18 @@ async def client_view_master_details(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("client_accept_bid:"))
 async def client_accept_bid_callback(callback: CallbackQuery):
     bid_id = int(callback.data.split(":")[1])
-    await process_accept_bid(callback.message, bid_id)
+    await process_accept_bid(callback.message, bid_id, callback.from_user.id)
     await callback.answer()
 
 @router.message(F.text.startswith("/accept_bid_"))
 async def accept_master_bid_msg(message: Message):
     try:
         bid_id = int(message.text.split("_")[-1])
-        await process_accept_bid(message, bid_id)
+        await process_accept_bid(message, bid_id, message.from_user.id)
     except: pass
 
-async def process_accept_bid(message: Message, bid_id: int):
+async def process_accept_bid(message: Message, bid_id: int, client_telegram_id: int):
+    """`client_telegram_id` is the real user pressing the button (NOT message.from_user, see process_view_order)."""
     async with async_session_maker() as session:
         # Load Bid with ALL necessary relations
         stmt = select(Bid).options(
@@ -263,8 +274,19 @@ async def process_accept_bid(message: Message, bid_id: int):
             return
 
         order = bid.order
-        if order.status != OrderStatus.NEW:
-            status_text = "в работе" if order.status == OrderStatus.ACTIVE else "уже завершен" if order.status == OrderStatus.COMPLETED else "отменен"
+        if order.client.telegram_id != client_telegram_id:
+            await message.answer("⛔ Вы не являетесь владельцем этой заявки.")
+            return
+
+        # lock the order row: two quick taps / two bids must not both win
+        locked_status = (await session.execute(
+            select(Order.status).where(Order.id == order.id).with_for_update()
+        )).scalar_one()
+        if bid.status != BidStatus.PENDING:
+            await message.answer("⚠️ Этот отклик уже недоступен.")
+            return
+        if locked_status != OrderStatus.NEW:
+            status_text = "в работе" if locked_status == OrderStatus.ACTIVE else "уже завершен" if locked_status == OrderStatus.COMPLETED else "отменен"
             await message.answer(f"⚠️ Вы не можете принять мастера: заказ уже {status_text}.")
             return
 
