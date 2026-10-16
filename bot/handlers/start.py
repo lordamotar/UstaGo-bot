@@ -8,6 +8,7 @@ from sqlalchemy import select
 from database.engine import async_session_maker
 from database.models import User, UserRole
 from bot.utils.acquisition import parse_start_payload, source_label, SOURCE_REFERRAL
+from bot.utils.roles import set_mode_role
 
 router = Router()
 
@@ -129,7 +130,7 @@ async def handle_client_role(message: Message, state: FSMContext):
         user = res.scalar_one_or_none()
         
         if user:
-            user.role = UserRole.CLIENT
+            set_mode_role(user, UserRole.CLIENT)
             await session.commit()
             
             from bot.core.config import config
@@ -192,7 +193,7 @@ async def handle_master_role(message: Message, state: FSMContext):
         
         if user and user.master_profile:
             # User IS a master, just return them to master mode
-            user.role = UserRole.MASTER
+            set_mode_role(user, UserRole.MASTER)
             await session.commit()
             
             from bot.core.config import config
