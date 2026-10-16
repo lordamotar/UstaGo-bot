@@ -16,6 +16,7 @@ from bot.keyboards.registration import (
     get_phone_sharing_keyboard
 )
 from bot.utils.text import esc
+from bot.utils.roles import set_mode_role
 
 @router.message(RegistrationStates.entering_name)
 async def process_name(message: Message, state: FSMContext):
@@ -177,7 +178,7 @@ async def process_phone(message: Message, state: FSMContext):
             session.add(user)
             await session.flush()
         else:
-            user.role = UserRole.MASTER
+            set_mode_role(user, UserRole.MASTER)
             user.full_name = data['full_name']
             user.phone_number = phone
         
